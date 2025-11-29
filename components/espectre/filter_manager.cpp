@@ -1,29 +1,85 @@
 /*
- * ESPectre - Signal Filtering Module Implementation
+ * ESPectre - Filter Manager Implementation
  * 
  * Author: Francesco Pace <francesco.pace@gmail.com>
  * License: GPLv3
  */
 
-#include "filters.h"
-#include <string.h>
-#include <math.h>
-#include <stdlib.h>
-#include "esp_log.h"
+#include "filter_manager.h"
+#include "utils.h"
+#include "esphome/core/log.h"
+#include <cstring>
+#include <cmath>
+#include <cstdlib>
 
-static const char *TAG = "Filters";
+namespace esphome {
+namespace espectre {
+
+static const char *TAG = "FilterManager";
 
 // Pre-computed Savitzky-Golay coefficients (window=5, poly=2)
 static const float savgol_coeffs_5_2[] = {-0.0857f, 0.3429f, 0.4857f, 0.3429f, -0.0857f};
 
-// qsort comparator for float
-static int compare_float(const void *a, const void *b) {
-    float fa = *(const float*)a;
-    float fb = *(const float*)b;
-    return (fa > fb) - (fa < fb);
+void FilterManager::init(uint8_t wavelet_level, float wavelet_threshold) {
+  // Initialize filter buffer
+  filter_buffer_init(&filter_buffer_);
+  
+  // Initialize Butterworth low-pass filter
+  butterworth_init(&butterworth_);
+  
+  // Initialize wavelet denoising
+  wavelet_init(&wavelet_, wavelet_level, wavelet_threshold, WAVELET_THRESH_SOFT);
+  
+  ESP_LOGD(TAG, "Filter Manager initialized (wavelet level: %d, threshold: %.1f)",
+           wavelet_level, wavelet_threshold);
 }
 
-void butterworth_init(butterworth_filter_t *filter) {
+float FilterManager::apply(float raw_value, const filter_config_t* config) {
+  return apply_filter_pipeline(raw_value, config, &butterworth_, &wavelet_, &filter_buffer_);
+}
+
+// Static implementations
+
+void FilterManager::hampel_turbulence_init(hampel_turbulence_state_t *state) {
+    if (!state) {
+        ESP_LOGE(TAG, "hampel_turbulence_init: NULL state pointer");
+        return;
+    }
+    
+    std::memset(state->buffer, 0, sizeof(state->buffer));
+    state->index = 0;
+    state->count = 0;
+}
+
+float FilterManager::hampel_filter_turbulence(hampel_turbulence_state_t *state, float turbulence) {
+#if ENABLE_HAMPEL_TURBULENCE_FILTER
+    if (!state) {
+        ESP_LOGE(TAG, "hampel_filter_turbulence: NULL state pointer");
+        return turbulence;
+    }
+    
+    // Add value to circular buffer
+    state->buffer[state->index] = turbulence;
+    state->index = (state->index + 1) % HAMPEL_TURBULENCE_WINDOW;
+    if (state->count < HAMPEL_TURBULENCE_WINDOW) {
+        state->count++;
+    }
+    
+    // Need at least 3 values for meaningful Hampel filtering
+    if (state->count < 3) {
+        return turbulence;
+    }
+    
+    // Call existing hampel_filter() function
+    return hampel_filter(state->buffer, state->count, 
+                        turbulence, HAMPEL_TURBULENCE_THRESHOLD);
+#else
+    // Hampel filter disabled - return raw value
+    return turbulence;
+#endif
+}
+
+void FilterManager::butterworth_init(butterworth_filter_t *filter) {
     if (!filter) {
         ESP_LOGE(TAG, "butterworth_init: NULL filter pointer");
         return;
@@ -44,12 +100,12 @@ void butterworth_init(butterworth_filter_t *filter) {
     filter->a[3] = -1.05466541f;
     filter->a[4] = 0.18737949f;
     
-    memset(filter->x, 0, sizeof(filter->x));
-    memset(filter->y, 0, sizeof(filter->y));
+    std::memset(filter->x, 0, sizeof(filter->x));
+    std::memset(filter->y, 0, sizeof(filter->y));
     filter->initialized = true;
 }
 
-float butterworth_filter(butterworth_filter_t *filter, float input) {
+float FilterManager::butterworth_filter(butterworth_filter_t *filter, float input) {
     if (!filter) {
         ESP_LOGE(TAG, "butterworth_filter: NULL filter pointer");
         return input;
@@ -89,21 +145,21 @@ float butterworth_filter(butterworth_filter_t *filter, float input) {
     return output;
 }
 
-float hampel_filter(const float *window, size_t window_size, 
-                   float current_value, float threshold) {
+float FilterManager::hampel_filter(const float *window, size_t window_size, 
+                                   float current_value, float threshold) {
     if (!window || window_size < 3) {
         return current_value;
     }
     
     // Create sorted copy for median calculation
-    float *sorted = (float*)malloc(window_size * sizeof(float));
+    float *sorted = (float*)std::malloc(window_size * sizeof(float));
     if (!sorted) {
         ESP_LOGE(TAG, "hampel_filter: Failed to allocate memory");
         return current_value;
     }
     
-    memcpy(sorted, window, window_size * sizeof(float));
-    qsort(sorted, window_size, sizeof(float), compare_float);
+    std::memcpy(sorted, window, window_size * sizeof(float));
+    std::qsort(sorted, window_size, sizeof(float), compare_float);
     
     // Calculate median
     float median = (window_size % 2 == 1) ? 
@@ -111,30 +167,30 @@ float hampel_filter(const float *window, size_t window_size,
                    (sorted[window_size / 2 - 1] + sorted[window_size / 2]) / 2.0f;
     
     // Calculate absolute deviations
-    float *abs_deviations = (float*)malloc(window_size * sizeof(float));
+    float *abs_deviations = (float*)std::malloc(window_size * sizeof(float));
     if (!abs_deviations) {
         ESP_LOGE(TAG, "hampel_filter: Failed to allocate memory for deviations");
-        free(sorted);
+        std::free(sorted);
         return current_value;
     }
     
     for (size_t i = 0; i < window_size; i++) {
-        abs_deviations[i] = fabsf(window[i] - median);
+        abs_deviations[i] = std::abs(window[i] - median);
     }
-    qsort(abs_deviations, window_size, sizeof(float), compare_float);
+    std::qsort(abs_deviations, window_size, sizeof(float), compare_float);
     
     // Calculate MAD (Median Absolute Deviation)
     float mad = (window_size % 2 == 1) ? 
                 abs_deviations[window_size / 2] : 
                 (abs_deviations[window_size / 2 - 1] + abs_deviations[window_size / 2]) / 2.0f;
     
-    free(abs_deviations);
-    free(sorted);
+    std::free(abs_deviations);
+    std::free(sorted);
     
     // Scale MAD to approximate standard deviation
     float mad_scaled = MAD_SCALE_FACTOR * mad;
     
-    float deviation = fabsf(current_value - median);
+    float deviation = std::abs(current_value - median);
     float threshold_value = threshold * mad_scaled;
     
     // Replace outliers with median
@@ -145,7 +201,7 @@ float hampel_filter(const float *window, size_t window_size,
     return current_value;
 }
 
-float savitzky_golay_filter(const float *window, size_t window_size) {
+float FilterManager::savitzky_golay_filter(const float *window, size_t window_size) {
     if (!window) {
         ESP_LOGE(TAG, "savitzky_golay_filter: NULL window pointer");
         return 0.0f;
@@ -169,19 +225,18 @@ float savitzky_golay_filter(const float *window, size_t window_size) {
     return result;
 }
 
-
-void filter_buffer_init(filter_buffer_t *fb) {
+void FilterManager::filter_buffer_init(filter_buffer_t *fb) {
     if (!fb) {
         ESP_LOGE(TAG, "filter_buffer_init: NULL buffer pointer");
         return;
     }
     
-    memset(fb->data, 0, sizeof(fb->data));
+    std::memset(fb->data, 0, sizeof(fb->data));
     fb->index = 0;
     fb->count = 0;
 }
 
-void filter_buffer_add(filter_buffer_t *fb, float value) {
+void FilterManager::filter_buffer_add(filter_buffer_t *fb, float value) {
     if (!fb) {
         ESP_LOGE(TAG, "filter_buffer_add: NULL buffer pointer");
         return;
@@ -194,8 +249,8 @@ void filter_buffer_add(filter_buffer_t *fb, float value) {
     }
 }
 
-void filter_buffer_get_window(const filter_buffer_t *fb, float *window, 
-                              size_t window_capacity, size_t *size) {
+void FilterManager::filter_buffer_get_window(const filter_buffer_t *fb, float *window, 
+                                             size_t window_capacity, size_t *size) {
     // Validate all input parameters
     if (!fb || !window) {
         ESP_LOGE(TAG, "filter_buffer_get_window: NULL pointer (fb=%p, window=%p)", 
@@ -237,7 +292,7 @@ void filter_buffer_get_window(const filter_buffer_t *fb, float *window,
     if (fb->count < SAVGOL_WINDOW_SIZE) {
         // Buffer not full yet - copy what we have
         size_t copy_size = (fb->count < window_capacity) ? fb->count : window_capacity;
-        memcpy(window, fb->data, copy_size * sizeof(float));
+        std::memcpy(window, fb->data, copy_size * sizeof(float));
         *size = copy_size;
     } else {
         // Buffer is full - copy in chronological order
@@ -250,11 +305,11 @@ void filter_buffer_get_window(const filter_buffer_t *fb, float *window,
     }
 }
 
-float apply_filter_pipeline(float raw_value, 
-                            const filter_config_t *config,
-                            butterworth_filter_t *butterworth,
-                            wavelet_state_t *wavelet,
-                            filter_buffer_t *buffer) {
+float FilterManager::apply_filter_pipeline(float raw_value, 
+                                           const filter_config_t *config,
+                                           butterworth_filter_t *butterworth,
+                                           wavelet_state_t *wavelet,
+                                           filter_buffer_t *buffer) {
     if (!config || !butterworth || !wavelet || !buffer) {
         ESP_LOGE(TAG, "apply_filter_pipeline: NULL pointer in parameters");
         return raw_value;
@@ -298,3 +353,6 @@ float apply_filter_pipeline(float raw_value,
     
     return filtered_value;
 }
+
+}  // namespace espectre
+}  // namespace esphome
