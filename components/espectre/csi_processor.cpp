@@ -1,15 +1,15 @@
 /*
  * ESPectre - CSI Processing Module Implementation
  * 
- * Combines CSI feature extraction with Moving Variance Segmentation (MVS).
+ * Implements Moving Variance Segmentation (MVS) for motion detection.
+ * Includes Hampel filter for turbulence outlier removal.
  * 
  * Author: Francesco Pace <francesco.pace@gmail.com>
  * License: GPLv3
  */
 
 #include "csi_processor.h"
-#include "csi_features.h"
-#include "filter_manager.h"
+#include "utils.h"
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -21,29 +21,142 @@ namespace espectre {
 static const char *TAG = "CSI_Processor";
 
 // ============================================================================
+// HAMPEL FILTER IMPLEMENTATION
+// ============================================================================
+
+void hampel_turbulence_init(hampel_turbulence_state_t *state, uint8_t window_size, float threshold, bool enabled) {
+    if (!state) {
+        ESP_LOGE(TAG, "hampel_turbulence_init: NULL state pointer");
+        return;
+    }
+    
+    // Validate window size
+    if (window_size < HAMPEL_TURBULENCE_WINDOW_MIN || window_size > HAMPEL_TURBULENCE_WINDOW_MAX) {
+        ESP_LOGW(TAG, "Invalid Hampel window size %d, using default %d", 
+                 window_size, HAMPEL_TURBULENCE_WINDOW_DEFAULT);
+        window_size = HAMPEL_TURBULENCE_WINDOW_DEFAULT;
+    }
+    
+    std::memset(state->buffer, 0, sizeof(state->buffer));
+    state->window_size = window_size;
+    state->index = 0;
+    state->count = 0;
+    state->threshold = threshold;
+    state->enabled = enabled;
+}
+
+float hampel_filter(const float *window, size_t window_size, 
+                   float current_value, float threshold) {
+    if (!window || window_size < 3) {
+        return current_value;
+    }
+    
+    // Create sorted copy for median calculation
+    float *sorted = (float*)std::malloc(window_size * sizeof(float));
+    if (!sorted) {
+        ESP_LOGE(TAG, "hampel_filter: Failed to allocate memory");
+        return current_value;
+    }
+    
+    std::memcpy(sorted, window, window_size * sizeof(float));
+    std::qsort(sorted, window_size, sizeof(float), compare_float);
+    
+    // Calculate median
+    float median = (window_size % 2 == 1) ? 
+                   sorted[window_size / 2] : 
+                   (sorted[window_size / 2 - 1] + sorted[window_size / 2]) / 2.0f;
+    
+    // Calculate absolute deviations
+    float *abs_deviations = (float*)std::malloc(window_size * sizeof(float));
+    if (!abs_deviations) {
+        ESP_LOGE(TAG, "hampel_filter: Failed to allocate memory for deviations");
+        std::free(sorted);
+        return current_value;
+    }
+    
+    for (size_t i = 0; i < window_size; i++) {
+        abs_deviations[i] = std::abs(window[i] - median);
+    }
+    std::qsort(abs_deviations, window_size, sizeof(float), compare_float);
+    
+    // Calculate MAD (Median Absolute Deviation)
+    float mad = (window_size % 2 == 1) ? 
+                abs_deviations[window_size / 2] : 
+                (abs_deviations[window_size / 2 - 1] + abs_deviations[window_size / 2]) / 2.0f;
+    
+    std::free(abs_deviations);
+    std::free(sorted);
+    
+    // Scale MAD to approximate standard deviation
+    float mad_scaled = MAD_SCALE_FACTOR * mad;
+    
+    float deviation = std::abs(current_value - median);
+    float threshold_value = threshold * mad_scaled;
+    
+    // Replace outliers with median
+    if (deviation > threshold_value) {
+        return median;
+    }
+    
+    return current_value;
+}
+
+float hampel_filter_turbulence(hampel_turbulence_state_t *state, float turbulence) {
+    if (!state) {
+        ESP_LOGE(TAG, "hampel_filter_turbulence: NULL state pointer");
+        return turbulence;
+    }
+    
+    // If filter disabled, return raw value
+    if (!state->enabled) {
+        return turbulence;
+    }
+    
+    // Add value to circular buffer
+    state->buffer[state->index] = turbulence;
+    state->index = (state->index + 1) % state->window_size;
+    if (state->count < state->window_size) {
+        state->count++;
+    }
+    
+    // Need at least 3 values for meaningful Hampel filtering
+    if (state->count < 3) {
+        return turbulence;
+    }
+    
+    // Call hampel_filter() function with configured threshold
+    return hampel_filter(state->buffer, state->count, 
+                        turbulence, state->threshold);
+}
+
+// ============================================================================
 // CONTEXT MANAGEMENT
 // ============================================================================
 
-// Initialize CSI processor context
 void csi_processor_init(csi_processor_context_t *ctx) {
     if (!ctx) {
         ESP_LOGE(TAG, "csi_processor_init: NULL context");
         return;
     }
     
-    // Use C++ aggregate initialization instead of memset
+    // Use C++ aggregate initialization
     *ctx = {};
     
-    // Initialize with platform-specific defaults
-    ctx->window_size = SEGMENTATION_DEFAULT_WINDOW_SIZE;
-    ctx->threshold = SEGMENTATION_DEFAULT_THRESHOLD;
-    ctx->state = CSI_STATE_IDLE;
+  // Initialize with defaults
+  ctx->window_size = SEGMENTATION_DEFAULT_WINDOW_SIZE;
+  ctx->threshold = SEGMENTATION_DEFAULT_THRESHOLD;
+  ctx->state = CSI_STATE_IDLE;
+  
+  // Initialize Hampel filter with defaults (will be reconfigured by csi_manager)
+  hampel_turbulence_init(&ctx->hampel_state, 
+                        HAMPEL_TURBULENCE_WINDOW_DEFAULT,
+                        HAMPEL_TURBULENCE_THRESHOLD_DEFAULT, 
+                        true);
     
     ESP_LOGI(TAG, "CSI processor initialized (window=%d, threshold=%.2f)",
              ctx->window_size, ctx->threshold);
 }
 
-// Reset CSI processor context (state machine only, preserve buffer)
 void csi_processor_reset(csi_processor_context_t *ctx) {
     if (!ctx) return;
     
@@ -52,14 +165,6 @@ void csi_processor_reset(csi_processor_context_t *ctx) {
     ctx->packet_index = 0;
     ctx->total_packets_processed = 0;
     
-    // PRESERVE these to avoid "cold start" problem:
-    // - ctx->turbulence_buffer (circular buffer with last values)
-    // - ctx->buffer_index (current position in circular buffer)
-    // - ctx->buffer_count (should stay at window_size after warm-up)
-    // - ctx->current_moving_variance (will be recalculated on next packet)
-    // - ctx->threshold (configured threshold)
-    // - ctx->window_size (configured parameter)
-    
     ESP_LOGD(TAG, "CSI processor reset (buffer and parameters preserved)");
 }
 
@@ -67,10 +172,10 @@ void csi_processor_reset(csi_processor_context_t *ctx) {
 // PARAMETER SETTERS
 // ============================================================================
 
-// Set window size
 bool csi_processor_set_window_size(csi_processor_context_t *ctx, uint16_t window_size) {
+    if (!ctx) return false;
     
-    // If changing window size, reset buffer to avoid inconsistencies
+    // If changing window size, reset buffer
     if (window_size != ctx->window_size) {
         ESP_LOGI(TAG, "Window size changed from %d to %d - resetting buffer", 
                  ctx->window_size, window_size);
@@ -84,7 +189,6 @@ bool csi_processor_set_window_size(csi_processor_context_t *ctx, uint16_t window
     return true;
 }
 
-// Set threshold
 bool csi_processor_set_threshold(csi_processor_context_t *ctx, float threshold) {
     if (!ctx) {
         ESP_LOGE(TAG, "csi_processor_set_threshold: NULL context");
@@ -127,7 +231,7 @@ float csi_processor_get_last_turbulence(const csi_processor_context_t *ctx) {
         return 0.0f;
     }
     
-    // Get the most recently added value (buffer_index - 1)
+    // Get the most recently added value
     int16_t last_idx = (int16_t)ctx->buffer_index - 1;
     if (last_idx < 0) {
         last_idx = ctx->window_size - 1;
@@ -141,26 +245,19 @@ uint32_t csi_processor_get_total_packets(const csi_processor_context_t *ctx) {
 }
 
 // ============================================================================
-// TURBULENCE CALCULATION (for MVS)
+// TURBULENCE CALCULATION
 // ============================================================================
 
-// Calculate spatial turbulence (std of subcarrier amplitudes)
-// Used for Moving Variance Segmentation (MVS)
 static float calculate_spatial_turbulence(const int8_t *csi_data, size_t csi_len,
                                           const uint8_t *selected_subcarriers,
                                           uint8_t num_subcarriers) {
-    if (!csi_data || csi_len < 2) {
+    if (!csi_data || csi_len < 2 || num_subcarriers == 0) {
         return 0.0f;
     }
     
-    if (num_subcarriers == 0) {
-        ESP_LOGE(TAG, "No subcarriers provided");
-        return 0.0f;
-    }
+    int total_subcarriers = csi_len / 2;
     
-    int total_subcarriers = csi_len / 2;  // Each subcarrier has I and Q
-    
-    // Temporary buffer for amplitudes (max 64 subcarriers)
+    // Temporary buffer for amplitudes
     float amplitudes[64];
     int valid_count = 0;
     
@@ -168,9 +265,7 @@ static float calculate_spatial_turbulence(const int8_t *csi_data, size_t csi_len
     for (int i = 0; i < num_subcarriers && i < 64; i++) {
         int sc_idx = selected_subcarriers[i];
         
-        // Validate subcarrier index
         if (sc_idx >= total_subcarriers) {
-            ESP_LOGW(TAG, "Subcarrier %d out of range, skipping", sc_idx);
             continue;
         }
         
@@ -193,23 +288,20 @@ static float calculate_spatial_turbulence(const int8_t *csi_data, size_t csi_len
 // MOVING VARIANCE CALCULATION
 // ============================================================================
 
-// Calculate moving variance from turbulence buffer
 static float calculate_moving_variance(const csi_processor_context_t *ctx) {
     // Return 0 if buffer not full yet
     if (ctx->buffer_count < ctx->window_size) {
         return 0.0f;
     }
     
-    // Use centralized two-pass variance calculation
     return calculate_variance_two_pass(ctx->turbulence_buffer, ctx->window_size);
 }
 
-// Add turbulence value to buffer and update state
 static void add_turbulence_and_update_state(csi_processor_context_t *ctx, float turbulence) {
-    // Apply Hampel filter to remove outliers before adding to MVS buffer
-    float filtered_turbulence = FilterManager::hampel_filter_turbulence(&ctx->hampel_state, turbulence);
+    // Apply Hampel filter to remove outliers
+    float filtered_turbulence = hampel_filter_turbulence(&ctx->hampel_state, turbulence);
     
-    // Add filtered value to circular buffer
+    // Add to circular buffer
     ctx->turbulence_buffer[ctx->buffer_index] = filtered_turbulence;
     ctx->buffer_index = (ctx->buffer_index + 1) % ctx->window_size;
     if (ctx->buffer_count < ctx->window_size) {
@@ -219,18 +311,14 @@ static void add_turbulence_and_update_state(csi_processor_context_t *ctx, float 
     // Calculate moving variance
     ctx->current_moving_variance = calculate_moving_variance(ctx);
     
-    // State machine for motion detection (simplified)
+    // State machine
     if (ctx->state == CSI_STATE_IDLE) {
-        // IDLE state: looking for motion start
         if (ctx->current_moving_variance > ctx->threshold) {
-            // Motion detected - transition to MOTION state
             ctx->state = CSI_STATE_MOTION;
             ESP_LOGD(TAG, "Motion started at packet %lu", (unsigned long)ctx->packet_index);
         }
     } else {
-        // MOTION state: check for motion end
         if (ctx->current_moving_variance < ctx->threshold) {
-            // Motion ended - return to IDLE state
             ctx->state = CSI_STATE_IDLE;
             ESP_LOGD(TAG, "Motion ended at packet %lu", (unsigned long)ctx->packet_index);
         }
@@ -241,79 +329,32 @@ static void add_turbulence_and_update_state(csi_processor_context_t *ctx, float 
 }
 
 // ============================================================================
-// FEATURE EXTRACTION ORCHESTRATION
-// ============================================================================
-
-// Main feature extraction function (orchestrator)
-// Extracts all 10 features from CSI data
-void csi_extract_features(const int8_t *csi_data,
-                         size_t csi_len,
-                         const float *turbulence_buffer,
-                         uint16_t turbulence_count,
-                         csi_features_t *features) {
-    if (!csi_data || !features) {
-        ESP_LOGE(TAG, "csi_extract_features: NULL pointer");
-        return;
-    }
-    
-    // Initialize all features to 0
-    *features = {};
-    
-    // Statistical features
-    features->variance = csi_calculate_variance(csi_data, csi_len);
-    features->skewness = csi_calculate_skewness(turbulence_buffer, turbulence_count);
-    features->kurtosis = csi_calculate_kurtosis(turbulence_buffer, turbulence_count);
-    features->entropy = csi_calculate_entropy(csi_data, csi_len);
-    features->iqr = csi_calculate_iqr(csi_data, csi_len);
-    
-    // Spatial features
-    features->spatial_variance = csi_calculate_spatial_variance(csi_data, csi_len);
-    features->spatial_correlation = csi_calculate_spatial_correlation(csi_data, csi_len);
-    features->spatial_gradient = csi_calculate_spatial_gradient(csi_data, csi_len);
-    
-    // Temporal features - use internal state in csi_features.cpp
-    features->temporal_delta_mean = csi_calculate_temporal_delta_mean(csi_data, csi_data, csi_len);
-    features->temporal_delta_variance = csi_calculate_temporal_delta_variance(csi_data, csi_data, csi_len);
-}
-
-// ============================================================================
 // MAIN PROCESSING FUNCTION
 // ============================================================================
 
-// Process a CSI packet: calculate turbulence, update motion detection, extract features
 void csi_process_packet(csi_processor_context_t *ctx,
                         const int8_t *csi_data,
                         size_t csi_len,
                         const uint8_t *selected_subcarriers,
-                        uint8_t num_subcarriers,
-                        csi_features_t *features) {
+                        uint8_t num_subcarriers) {
     if (!ctx || !csi_data) {
         ESP_LOGE(TAG, "csi_process_packet: NULL pointer");
         return;
     }
     
-    // Step 1: Calculate spatial turbulence
+    // Calculate spatial turbulence
     float turbulence = calculate_spatial_turbulence(csi_data, csi_len,
                                                     selected_subcarriers,
                                                     num_subcarriers);
     
-    // Step 2: Add turbulence to buffer and update motion detection state
+    // Add turbulence to buffer and update motion detection state
     add_turbulence_and_update_state(ctx, turbulence);
-    
-    // Step 3: Extract all features if requested
-    if (features) {
-        csi_extract_features(csi_data, csi_len,
-                            ctx->turbulence_buffer, ctx->buffer_count,
-                            features);
-    }
 }
 
 // ============================================================================
 // SUBCARRIER SELECTION
 // ============================================================================
 
-// Note: Subcarrier selection is now managed by ESpectreComponent class
-// This function is kept for API compatibility but is no longer used
 void csi_set_subcarrier_selection(const uint8_t *selected_subcarriers,
                                    uint8_t num_subcarriers) {
     if (!selected_subcarriers || num_subcarriers == 0 || num_subcarriers > 64) {
@@ -321,7 +362,7 @@ void csi_set_subcarrier_selection(const uint8_t *selected_subcarriers,
         return;
     }
     
-    ESP_LOGI(TAG, "Subcarrier selection updated: %d subcarriers (managed by component)", num_subcarriers);
+    ESP_LOGI(TAG, "Subcarrier selection updated: %d subcarriers", num_subcarriers);
 }
 
 }  // namespace espectre

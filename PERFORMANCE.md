@@ -70,24 +70,31 @@ These missed detections are acceptable for most use cases (home automation, pres
 
 ---
 
-## How to Reproduce
+## How to Verify Performance
 
-### Using ESP32 Test Suite (C)
+### Monitor Detection in Real-Time
+
 ```bash
-cd test_app
-idf.py build flash monitor
-# Run: performance_suite_comprehensive test
+# View ESPHome logs
+esphome logs espectre.yaml
 ```
 
-### Using Python Tools
-```bash
-cd micro-espectre/tools
-python 2_analyze_system_tuning.py --confusion-matrix
-```
+Watch for state transitions:
+- `state=MOTION` when movement occurs
+- `state=IDLE` when room is quiet
 
-### Requirements
-- Baseline data: `micro-espectre/tools/baseline_data.bin`
-- Movement data: `micro-espectre/tools/movement_data.bin`
+### Home Assistant History
+
+Use Home Assistant's History panel to visualize:
+- **binary_sensor.espectre_motion_detected** - Motion events over time
+- **sensor.espectre_movement_score** - Movement intensity graph
+
+### Collecting Test Data
+
+For rigorous testing, you can:
+1. Record baseline period (no movement) for 10+ seconds
+2. Record movement period (walking, gestures) for 10+ seconds
+3. Compare detection accuracy against ground truth
 
 ---
 
@@ -114,7 +121,7 @@ Real performances may vary based on:
 - **Wall materials**: Drywall vs. concrete
 - **Interference**: Other Wi-Fi devices, microwave ovens
 
-See [CALIBRATION.md](CALIBRATION.md) for detailed tuning instructions.
+See [TUNING.md](TUNING.md) for detailed tuning instructions.
 
 ---
 

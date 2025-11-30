@@ -13,7 +13,6 @@
 #include "esp_wifi.h"
 #include "esp_err.h"
 #include "csi_processor.h"
-#include "csi_features.h"
 #include <functional>
 
 namespace esphome {
@@ -23,7 +22,7 @@ namespace espectre {
 class CalibrationManager;
 
 // Callback type for processed CSI data
-using csi_processed_callback_t = std::function<void(const csi_features_t*, csi_motion_state_t)>;
+using csi_processed_callback_t = std::function<void(csi_motion_state_t)>;
 
 /**
  * CSI Manager
@@ -41,13 +40,19 @@ class CSIManager {
    * @param selected_subcarriers Initial subcarrier selection (array of 12 subcarriers)
    * @param segmentation_threshold Motion detection threshold
    * @param segmentation_window_size Moving variance window size
-   * @param publish_rate Number of packets before triggering callback (e.g., 100 = 1 second at 100pps)
+   * @param publish_rate Number of packets before triggering callback
+   * @param hampel_enabled Whether Hampel filter is enabled
+   * @param hampel_window Hampel window size (3-11)
+   * @param hampel_threshold Hampel threshold (MAD multiplier)
    */
   void init(csi_processor_context_t* processor,
             const uint8_t selected_subcarriers[12],
             float segmentation_threshold,
             uint16_t segmentation_window_size,
-            uint32_t publish_rate);
+            uint32_t publish_rate,
+            bool hampel_enabled,
+            uint8_t hampel_window,
+            float hampel_threshold);
   
   /**
    * Update subcarrier selection
@@ -88,16 +93,12 @@ class CSIManager {
   /**
    * Process incoming CSI packet
    * 
-   * Orchestrates: calibration check → processing → feature extraction
+   * Orchestrates: calibration check → processing
    * 
    * @param data CSI packet data
-   * @param features_enabled Whether to extract features
-   * @param current_features Output for extracted features (can be nullptr)
    * @param motion_state Output for motion state
    */
   void process_packet(wifi_csi_info_t* data,
-                     bool features_enabled,
-                     csi_features_t* current_features,
                      csi_motion_state_t& motion_state);
   
   /**

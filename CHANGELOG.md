@@ -4,7 +4,100 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [Unreleased]
+## [2.0.0] - work in progress
+
+### 🚀 Major - ESPHome Native Integration
+
+**Complete platform migration from ESP-IDF to ESPHome**
+
+This release represents a major architectural shift from standalone ESP-IDF firmware to a native ESPHome component, enabling seamless Home Assistant integration.
+
+### 🎯 Two-Platform Strategy
+
+**ESPectre now follows a dual-platform development model:**
+
+| Platform | Role | Focus | Target |
+|----------|------|-------|--------|
+| **ESPectre** (ESPHome - C++) | Production | Motion detection only | Smart home users, Home Assistant |
+| **Micro-ESPectre** (Micro Python) | R&D | Features + Filters for research | Researchers, developers, academics |
+
+**ESPectre** focuses on core motion detection for Home Assistant integration.
+**Micro-ESPectre** provides features (variance, skewness, kurtosis, entropy, IQR, spatial_*, temporal_*) and advanced filters (Butterworth, Wavelet, Savitzky-Golay) for research/ML applications.
+
+**New Architecture:**
+- **Native ESPHome component**: Full C++ implementation as ESPHome external component
+- **Home Assistant auto-discovery**: Automatic device and sensor registration via Native API
+- **YAML configuration**: All parameters configurable via simple YAML files
+- **OTA updates**: Wireless firmware updates via ESPHome
+
+**Implementation:**
+- `components/espectre/`: Complete ESPHome component with Python config and C++ implementation
+- Modular C++ architecture: `calibration_manager`, `csi_manager`, `filter_manager`, `sensor_publisher`, etc.
+- Binary sensor for motion detection
+- Numeric sensors for movement score, threshold, and optional features
+
+**Configuration Example:**
+```yaml
+external_components:
+  - source: github://francescopace/espectre
+    components: [ espectre ]
+
+espectre:
+  traffic_generator_rate: 100
+  segmentation_threshold: 1.0
+
+binary_sensor:
+  - platform: espectre
+    motion:
+      name: "Motion Detected"
+```
+
+### 📚 Documentation Overhaul
+
+**Complete documentation rewrite for ESPHome workflow:**
+
+- **README.md**: Updated for ESPHome integration
+  - Changed badge from ESP-IDF to ESPHome
+  - Updated software requirements (ESPHome + Home Assistant)
+  - Added minimal YAML configuration example
+  - Updated system architecture diagram
+  
+- **SETUP.md**: Complete rewrite
+  - ESPHome Dashboard and Command Line installation options
+  - All YAML configuration parameters documented
+  - Automatic Home Assistant integration section
+  - Platform-specific configurations (ESP32-C6, ESP32-S3)
+  - Automation examples
+  
+- **TUNING.md**: Renamed from CALIBRATION.md
+  - Better reflects content (parameter tuning vs calibration)
+  - YAML-based configuration examples
+  - Monitoring via `esphome logs`
+  
+- **PERFORMANCE.md**: Updated for ESPHome verification workflow
+
+### 🔄 Micro-ESPectre Updates
+
+**Updated documentation to reflect ESPHome as main platform:**
+
+- Comparison tables updated: "C (ESP-IDF)" → "ESPHome (C++)"
+- Added Home Assistant integration comparison (Native API vs MQTT)
+- Updated performance metrics and build times
+- Clarified that Micro-ESPectre uses MQTT while ESPHome uses Native API
+- Added inline MQTT command reference and Home Assistant YAML examples
+
+### ⚠️ BREAKING CHANGES
+
+- **ESP-IDF standalone support removed**: ESPHome is now the only supported platform
+- **MQTT support removed**: Replaced with ESPHome Native API for Home Assistant
+- **CLI tool removed**: Configuration now via YAML and Home Assistant UI
+- **Web monitor removed**: Monitoring via Home Assistant dashboards and `esphome logs`
+
+**Migration path**: For MQTT-based setups, use [Micro-ESPectre](micro-espectre/) (Python/MicroPython implementation)
+
+---
+
+## [1.4.1] unreleased
 
 ### 🧬 Added - NBVI Automatic Subcarrier Selection
 

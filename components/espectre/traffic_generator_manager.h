@@ -2,7 +2,7 @@
  * ESPectre - Traffic Generator Manager
  * 
  * Generates WiFi traffic using UDP/DNS queries to ensure CSI data availability.
- * This implementation is optimized for minimal overhead using raw sockets.
+ * Optimized for minimal overhead using raw sockets.
  * 
  * Author: Francesco Pace <francesco.pace@gmail.com>
  * License: GPLv3

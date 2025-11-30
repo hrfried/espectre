@@ -1,8 +1,8 @@
 /*
  * ESPectre - Traffic Generator Manager Implementation
  * 
- * Optimized UDP/DNS-based traffic generator for minimal overhead.
- * Aligned with micro-espectre Python implementation.
+ * Manages UDP/DNS-based traffic generator for CSI packet generation.
+ * Optimized for minimal overhead and aligned with micro-espectre.
  * 
  * Author: Francesco Pace <francesco.pace@gmail.com>
  * License: GPLv3

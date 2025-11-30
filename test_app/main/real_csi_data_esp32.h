@@ -1,8 +1,11 @@
 /*
- * Real CSI Data Captured from ESP32-C6 Device
- * Used for Testing and Performance Evaluation
- *
- * Generated from 1000 baseline and 1000 movement packets
+ * ESPectre - Real CSI Test Data
+ * 
+ * Real CSI data captured from ESP32-C6 device for testing and performance evaluation.
+ * Contains 1000 baseline packets (static environment) and 1000 movement packets.
+ * 
+ * Author: Francesco Pace <francesco.pace@gmail.com>
+ * License: GPLv3
  */
 
 #ifndef REAL_CSI_DATA_ESP32_H

@@ -57,15 +57,10 @@ espectre:
   traffic_generator_rate: 100   # Packets/sec to gateway (generates CSI data, 0=disabled)
   segmentation_threshold: 1.0   # Motion sensitivity (0.5-10.0, lower=more sensitive)
   segmentation_window_size: 50  # Moving variance window in packets (10-200, larger=smoother)
-  # selected_subcarriers: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]  # Fixed subcarriers (omit for auto-calibration)
-  features_enabled: false       # Statistical feature extraction (for ML analysis)
-  butterworth_enabled: false    # Low-pass filter (removes noise >8Hz)
-  savgol_enabled: false         # Savitzky-Golay polynomial smoothing
-  hampel_enabled: false         # Outlier removal using MAD
-  hampel_threshold: 2.0         # MAD multiplier (1.0-10.0, lower=more aggressive)
-  wavelet_enabled: false        # Wavelet transform denoising
-  wavelet_level: 3              # Wavelet decomposition depth (1-3)
-  wavelet_threshold: 1.0        # Wavelet noise threshold (0.5-2.0)
+  # selected_subcarriers: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]  # Keep commented to enable auto-calibration
+  hampel_enabled: true          # Enable Hampel filter for turbulence outlier removal
+  hampel_window: 7              # Window size for median calculation (3-11, larger=more smoothing)
+  hampel_threshold: 4.0         # MAD multiplier (1.0-10.0, lower=more aggressive filtering)
 
 binary_sensor:
   - platform: espectre

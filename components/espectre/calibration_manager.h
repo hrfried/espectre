@@ -1,8 +1,8 @@
 /*
  * ESPectre - Calibration Manager
  * 
- * Manages NBVI (Normalized Baseline Variance Index) auto-calibration.
- * Automatically selects optimal subcarriers for motion detection.
+ * Manages NBVI (Normalized Baseline Variability Index) auto-calibration.
+ * Automatically selects optimal 12 subcarriers for motion detection.
  * 
  * Author: Francesco Pace <francesco.pace@gmail.com>
  * License: GPLv3

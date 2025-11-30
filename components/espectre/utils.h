@@ -18,6 +18,39 @@ namespace esphome {
 namespace espectre {
 
 /**
+ * Calculate variance using two-pass algorithm (numerically stable)
+ * 
+ * Two-pass algorithm: variance = sum((x - mean)^2) / n
+ * More stable than single-pass E[X²] - E[X]² for float32 arithmetic.
+ * 
+ * @param values Array of float values
+ * @param n Number of values
+ * @return Variance (0.0 if n == 0)
+ */
+inline float calculate_variance_two_pass(const float *values, size_t n) {
+    if (n == 0 || !values) {
+        return 0.0f;
+    }
+    
+    // First pass: calculate mean
+    float mean = 0.0f;
+    for (size_t i = 0; i < n; i++) {
+        mean += values[i];
+    }
+    mean /= n;
+    
+    // Second pass: calculate variance
+    float variance = 0.0f;
+    for (size_t i = 0; i < n; i++) {
+        float diff = values[i] - mean;
+        variance += diff * diff;
+    }
+    variance /= n;
+    
+    return variance;
+}
+
+/**
  * Compare two float values for qsort
  * 
  * @param a Pointer to first float

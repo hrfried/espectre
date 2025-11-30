@@ -1,3 +1,13 @@
+/*
+ * ESPectre - Main Component
+ * 
+ * Main ESPHome component that orchestrates all ESPectre subsystems.
+ * Integrates CSI processing, calibration, and Home Assistant publishing.
+ * 
+ * Author: Francesco Pace <francesco.pace@gmail.com>
+ * License: GPLv3
+ */
+
 #pragma once
 
 #include "esphome/core/component.h"
@@ -13,8 +23,6 @@
 
 // Include C++ modules
 #include "csi_processor.h"
-#include "filter_manager.h"
-#include "csi_features.h"
 #include "sensor_publisher.h"
 #include "csi_manager.h"
 #include "wifi_lifecycle.h"
@@ -41,14 +49,9 @@ class ESpectreComponent : public Component {
   void set_segmentation_threshold(float threshold) { this->segmentation_threshold_ = threshold; }
   void set_segmentation_window_size(uint16_t size) { this->segmentation_window_size_ = size; }
   void set_traffic_generator_rate(uint32_t rate) { this->traffic_generator_rate_ = rate; }
-  void set_features_enabled(bool enabled) { this->features_enabled_ = enabled; }
-  void set_butterworth_enabled(bool enabled) { this->butterworth_enabled_ = enabled; }
-  void set_wavelet_enabled(bool enabled) { this->wavelet_enabled_ = enabled; }
-  void set_wavelet_level(uint8_t level) { this->wavelet_level_ = level; }
-  void set_wavelet_threshold(float threshold) { this->wavelet_threshold_ = threshold; }
   void set_hampel_enabled(bool enabled) { this->hampel_enabled_ = enabled; }
+  void set_hampel_window(uint8_t window) { this->hampel_window_ = window; }
   void set_hampel_threshold(float threshold) { this->hampel_threshold_ = threshold; }
-  void set_savgol_enabled(bool enabled) { this->savgol_enabled_ = enabled; }
   
   // Subcarrier selection (optional, defaults to auto-calibrated or DEFAULT_SUBCARRIERS)
   void set_selected_subcarriers(const std::vector<uint8_t> &subcarriers) {
@@ -64,18 +67,6 @@ class ESpectreComponent : public Component {
   void set_threshold_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_threshold_sensor(sensor); }
   void set_motion_binary_sensor(binary_sensor::BinarySensor *sensor) { this->sensor_publisher_.set_motion_binary_sensor(sensor); }
   
-  // Feature sensors (optional, delegated to SensorPublisher)
-  void set_variance_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_variance_sensor(sensor); }
-  void set_skewness_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_skewness_sensor(sensor); }
-  void set_kurtosis_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_kurtosis_sensor(sensor); }
-  void set_entropy_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_entropy_sensor(sensor); }
-  void set_iqr_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_iqr_sensor(sensor); }
-  void set_spatial_variance_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_spatial_variance_sensor(sensor); }
-  void set_spatial_correlation_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_spatial_correlation_sensor(sensor); }
-  void set_spatial_gradient_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_spatial_gradient_sensor(sensor); }
-  void set_temporal_delta_mean_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_temporal_delta_mean_sensor(sensor); }
-  void set_temporal_delta_variance_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_temporal_delta_variance_sensor(sensor); }
-  
  protected:
   // WiFi lifecycle callbacks
   void on_wifi_connected_();
@@ -83,7 +74,6 @@ class ESpectreComponent : public Component {
   
   // C state (core modules)
   csi_processor_context_t csi_processor_{};
-  csi_features_t current_features_{};
   csi_motion_state_t motion_state_{};
   
   
@@ -91,14 +81,9 @@ class ESpectreComponent : public Component {
   float segmentation_threshold_{1.0f};
   uint16_t segmentation_window_size_{50};
   uint32_t traffic_generator_rate_{100};
-  bool features_enabled_{true};
-  bool butterworth_enabled_{true};
-  bool wavelet_enabled_{false};
-  uint8_t wavelet_level_{3};
-  float wavelet_threshold_{1.0f};
   bool hampel_enabled_{true};
-  float hampel_threshold_{2.0f};
-  bool savgol_enabled_{true};  
+  uint8_t hampel_window_{7};
+  float hampel_threshold_{4.0f};
   uint8_t selected_subcarriers_[12] = {11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22};
   
   bool user_specified_subcarriers_{false};  // True if user specified in YAML
@@ -110,7 +95,6 @@ class ESpectreComponent : public Component {
   ConfigurationManager config_manager_;
   CalibrationManager calibration_manager_;
   TrafficGeneratorManager traffic_generator_;
-  FilterManager filter_manager_;
   
   // State flags
   bool ready_to_publish_{false};  // True when CSI is ready and calibration done

@@ -1,21 +1,21 @@
 /*
- * ESPectre - Unified CSI Processing Module
+ * ESPectre - CSI Processing Module
  * 
- * Combines CSI feature extraction with Moving Variance Segmentation (MVS) for motion detection.
- * 
- * Features extracted from CSI data:
- * - Statistical (5): variance, skewness (amplitude-based), kurtosis, entropy, IQR
- * - Spatial (3): variance, correlation, gradient (across subcarriers within packet)
- * - Temporal (2): delta_mean, delta_variance (changes between consecutive packets)
+ * Implements Moving Variance Segmentation (MVS) for real-time motion detection
+ * using Wi-Fi Channel State Information (CSI).
  * 
  * Motion detection algorithm (MVS):
  * 1. Calculate spatial turbulence (std of subcarrier amplitudes) per packet
- * 2. Compute moving variance on turbulence signal
- * 3. Apply configurable threshold
- * 4. Segment motion using state machine
+ * 2. Apply optional Hampel filter to remove outliers
+ * 3. Compute moving variance on turbulence signal
+ * 4. Apply configurable threshold for motion segmentation
+ * 5. Update state machine (IDLE ↔ MOTION)
  * 
- * NOTE: Skewness/kurtosis are calculated on the turbulence buffer (moving window)
- *       for better separation between baseline and movement.
+ * Key features:
+ * - Zero configuration (works with automatic subcarrier selection)
+ * - Real-time processing
+ * - Configurable sensitivity (threshold and window size)
+ * - Optional Hampel filter for noisy environments
  * 
  * Author: Francesco Pace <francesco.pace@gmail.com>
  * License: GPLv3
@@ -26,7 +26,6 @@
 #include "sdkconfig.h"
 #include <cstdint>
 #include <cstddef>
-#include "filter_manager.h"  // For hampel_turbulence_state_t
 
 namespace esphome {
 namespace espectre {
@@ -34,6 +33,23 @@ namespace espectre {
 // Segmentation constants
 constexpr uint16_t SEGMENTATION_DEFAULT_WINDOW_SIZE = 50;
 constexpr float SEGMENTATION_DEFAULT_THRESHOLD = 1.0f;
+
+// Hampel filter constants
+constexpr float MAD_SCALE_FACTOR = 1.4826f; // Median Absolute Deviation scale factor
+constexpr uint8_t HAMPEL_TURBULENCE_WINDOW_MIN = 3;
+constexpr uint8_t HAMPEL_TURBULENCE_WINDOW_MAX = 11;
+constexpr uint8_t HAMPEL_TURBULENCE_WINDOW_DEFAULT = 7;
+constexpr float HAMPEL_TURBULENCE_THRESHOLD_DEFAULT = 4.0f;
+
+// Hampel turbulence filter state (for MVS preprocessing)
+struct hampel_turbulence_state_t {
+    float buffer[HAMPEL_TURBULENCE_WINDOW_MAX];  // Max size buffer
+    uint8_t window_size;  // Actual window size (3-11)
+    uint8_t index;
+    uint8_t count;
+    float threshold;  // Configurable threshold (MAD multiplier)
+    bool enabled;     // Whether filter is enabled
+};
 
 // ============================================================================
 // MOTION DETECTION STATE
@@ -76,29 +92,6 @@ struct csi_processor_context_t {
 };
 
 // ============================================================================
-// CSI FEATURES
-// ============================================================================
-
-// CSI features extracted from raw data
-struct csi_features_t {
-    // Statistical features (5)
-    float variance;
-    float skewness;
-    float kurtosis;
-    float entropy;
-    float iqr;  // Interquartile range
-    
-    // Spatial features (3)
-    float spatial_variance;
-    float spatial_correlation;
-    float spatial_gradient;
-    
-    // Temporal features (2) - changes between consecutive packets
-    float temporal_delta_mean;      // Average absolute difference from previous packet
-    float temporal_delta_variance;  // Variance of differences from previous packet
-};
-
-// ============================================================================
 // CONTEXT MANAGEMENT
 // ============================================================================
 
@@ -110,46 +103,24 @@ struct csi_features_t {
 void csi_processor_init(csi_processor_context_t *ctx);
 
 /**
- * Process a CSI packet: calculate turbulence, update motion detection, extract features
+ * Process a CSI packet: calculate turbulence, update motion detection
  * 
  * This is the main entry point for CSI processing. It:
  * 1. Calculates spatial turbulence from the packet
  * 2. Updates the turbulence buffer and moving variance
  * 3. Updates motion detection state
- * 4. Optionally extracts all features if requested
  * 
  * @param ctx CSI processor context
  * @param csi_data Raw CSI data (int8_t array)
  * @param csi_len Length of CSI data
  * @param selected_subcarriers Array of subcarrier indices for turbulence calculation
  * @param num_subcarriers Number of selected subcarriers
- * @param features Output structure for extracted features (can be NULL to skip feature extraction)
  */
 void csi_process_packet(csi_processor_context_t *ctx,
                         const int8_t *csi_data,
                         size_t csi_len,
                         const uint8_t *selected_subcarriers,
-                        uint8_t num_subcarriers,
-                        csi_features_t *features);
-
-/**
- * Extract all features from CSI data (orchestrator function)
- * 
- * This function orchestrates feature extraction by calling individual
- * feature calculation functions from csi_features.cpp. It has direct access
- * to the turbulence buffer for skewness/kurtosis calculation.
- * 
- * @param csi_data Raw CSI data (int8_t array)
- * @param csi_len Length of CSI data
- * @param turbulence_buffer Buffer of turbulence values for skewness/kurtosis (can be NULL)
- * @param turbulence_count Number of valid values in turbulence buffer
- * @param features Output structure for extracted features
- */
-void csi_extract_features(const int8_t *csi_data,
-                         size_t csi_len,
-                         const float *turbulence_buffer,
-                         uint16_t turbulence_count,
-                         csi_features_t *features);
+                        uint8_t num_subcarriers);
 
 /**
  * Reset CSI processor context (clear state machine only)
@@ -251,6 +222,41 @@ uint32_t csi_processor_get_total_packets(const csi_processor_context_t *ctx);
  */
 void csi_set_subcarrier_selection(const uint8_t *selected_subcarriers,
                                    uint8_t num_subcarriers);
+
+// ============================================================================
+// HAMPEL FILTER (Turbulence Outlier Removal)
+// ============================================================================
+
+/**
+ * Initialize Hampel turbulence filter state
+ * 
+ * @param state Hampel filter state
+ * @param window_size Window size for median calculation (3-11)
+ * @param threshold MAD multiplier threshold
+ * @param enabled Whether filter is enabled
+ */
+void hampel_turbulence_init(hampel_turbulence_state_t *state, uint8_t window_size, float threshold, bool enabled);
+
+/**
+ * Apply Hampel filter for outlier detection
+ * 
+ * @param window Array of values
+ * @param window_size Size of window
+ * @param current_value Current value to filter
+ * @param threshold MAD multiplier threshold
+ * @return Filtered value
+ */
+float hampel_filter(const float *window, size_t window_size, 
+                   float current_value, float threshold);
+
+/**
+ * Apply Hampel filter to turbulence value (for MVS preprocessing)
+ * 
+ * @param state Hampel filter state
+ * @param turbulence Current turbulence value
+ * @return Filtered turbulence value (or original if filter disabled)
+ */
+float hampel_filter_turbulence(hampel_turbulence_state_t *state, float turbulence);
 
 }  // namespace espectre
 }  // namespace esphome

@@ -19,7 +19,10 @@ void CSIManager::init(csi_processor_context_t* processor,
                      const uint8_t selected_subcarriers[12],
                      float segmentation_threshold,
                      uint16_t segmentation_window_size,
-                     uint32_t publish_rate) {
+                     uint32_t publish_rate,
+                     bool hampel_enabled,
+                     uint8_t hampel_window,
+                     float hampel_threshold) {
   processor_ = processor;
   selected_subcarriers_ = selected_subcarriers;
   publish_rate_ = publish_rate;
@@ -32,8 +35,11 @@ void CSIManager::init(csi_processor_context_t* processor,
   csi_processor_set_window_size(processor_, segmentation_window_size);
   csi_set_subcarrier_selection(selected_subcarriers_, NUM_SUBCARRIERS);
   
-  ESP_LOGD(TAG, "CSI Manager initialized (threshold: %.2f, window: %d, subcarriers: %d)",
-           segmentation_threshold, segmentation_window_size, NUM_SUBCARRIERS);
+  // Configure Hampel filter
+  hampel_turbulence_init(&processor_->hampel_state, hampel_window, hampel_threshold, hampel_enabled);
+  
+  ESP_LOGD(TAG, "CSI Manager initialized (threshold: %.2f, window: %d, hampel: %s, window: %d)",
+           segmentation_threshold, segmentation_window_size, hampel_enabled ? "ON" : "OFF", hampel_window);
 }
 
 void CSIManager::update_subcarrier_selection(const uint8_t subcarriers[12]) {
@@ -53,8 +59,6 @@ void CSIManager::set_window_size(uint16_t window_size) {
 }
 
 void CSIManager::process_packet(wifi_csi_info_t* data,
-                                bool features_enabled,
-                                csi_features_t* current_features,
                                 csi_motion_state_t& motion_state) {
   if (!data || !processor_) {
     return;
@@ -78,8 +82,7 @@ void CSIManager::process_packet(wifi_csi_info_t* data,
   csi_process_packet(processor_,
                     csi_data, csi_len,
                     selected_subcarriers_,
-                    NUM_SUBCARRIERS,
-                    features_enabled ? current_features : nullptr);
+                    NUM_SUBCARRIERS);
   
   // Update motion state
   motion_state = csi_processor_get_state(processor_);
@@ -88,7 +91,7 @@ void CSIManager::process_packet(wifi_csi_info_t* data,
   packets_processed_++;
   if (packets_processed_ >= publish_rate_) {
     if (packet_callback_) {
-      packet_callback_(current_features, motion_state);
+      packet_callback_(motion_state);
     }
     packets_processed_ = 0;
   }
@@ -100,10 +103,8 @@ void CSIManager::csi_rx_callback_wrapper_(void* ctx, wifi_csi_info_t* data) {
   CSIManager* manager = static_cast<CSIManager*>(ctx);
   if (manager && data) {
     // Process packet directly in the manager
-    // Note: This is called from WiFi task context, so we need to be careful
-    // For now, we'll process synchronously since CSI packets are infrequent
     csi_motion_state_t dummy_state;
-    manager->process_packet(data, false, nullptr, dummy_state);
+    manager->process_packet(data, dummy_state);
   }
 }
 

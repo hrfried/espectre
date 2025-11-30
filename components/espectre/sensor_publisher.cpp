@@ -14,7 +14,6 @@ namespace esphome {
 namespace espectre {
 
 void SensorPublisher::publish_all(const csi_processor_context_t *processor,
-                                  const csi_features_t *features,
                                   csi_motion_state_t motion_state) {
   if (!processor) {
     return;
@@ -36,40 +35,6 @@ void SensorPublisher::publish_all(const csi_processor_context_t *processor,
   
   if (threshold_sensor_) {
     threshold_sensor_->publish_state(threshold);
-  }
-  
-  // Publish feature sensors (if features provided)
-  if (features) {
-    if (variance_sensor_) {
-      variance_sensor_->publish_state(features->variance);
-    }
-    if (skewness_sensor_) {
-      skewness_sensor_->publish_state(features->skewness);
-    }
-    if (kurtosis_sensor_) {
-      kurtosis_sensor_->publish_state(features->kurtosis);
-    }
-    if (entropy_sensor_) {
-      entropy_sensor_->publish_state(features->entropy);
-    }
-    if (iqr_sensor_) {
-      iqr_sensor_->publish_state(features->iqr);
-    }
-    if (spatial_variance_sensor_) {
-      spatial_variance_sensor_->publish_state(features->spatial_variance);
-    }
-    if (spatial_correlation_sensor_) {
-      spatial_correlation_sensor_->publish_state(features->spatial_correlation);
-    }
-    if (spatial_gradient_sensor_) {
-      spatial_gradient_sensor_->publish_state(features->spatial_gradient);
-    }
-    if (temporal_delta_mean_sensor_) {
-      temporal_delta_mean_sensor_->publish_state(features->temporal_delta_mean);
-    }
-    if (temporal_delta_variance_sensor_) {
-      temporal_delta_variance_sensor_->publish_state(features->temporal_delta_variance);
-    }
   }
 }
 

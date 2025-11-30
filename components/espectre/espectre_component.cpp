@@ -1,3 +1,13 @@
+/*
+ * ESPectre - Main Component Implementation
+ * 
+ * Main ESPHome component that orchestrates all ESPectre subsystems.
+ * Integrates CSI processing, calibration, and Home Assistant publishing.
+ * 
+ * Author: Francesco Pace <francesco.pace@gmail.com>
+ * License: GPLv3
+ */
+
 #include "espectre_component.h"
 #include "utils.h"
 #include "esphome/core/log.h"
@@ -26,18 +36,12 @@ void ESpectreComponent::setup() {
     this->segmentation_threshold_ = config.segmentation_threshold;
     this->segmentation_window_size_ = config.segmentation_window_size;
     this->traffic_generator_rate_ = config.traffic_generator_rate;
-    this->features_enabled_ = config.features_enabled;
-    this->butterworth_enabled_ = config.butterworth_enabled;
-    this->wavelet_enabled_ = config.wavelet_enabled;
-    this->wavelet_level_ = config.wavelet_level;
-    this->wavelet_threshold_ = config.wavelet_threshold;
     this->hampel_enabled_ = config.hampel_enabled;
+    this->hampel_window_ = config.hampel_window;
     this->hampel_threshold_ = config.hampel_threshold;
-    this->savgol_enabled_ = config.savgol_enabled;
   }
   
   // 3. Initialize managers (each manager handles its own internal initialization)
-  this->filter_manager_.init(this->wavelet_level_, this->wavelet_threshold_);
   this->calibration_manager_.init(&this->csi_manager_);
   this->traffic_generator_.init(this->traffic_generator_rate_);
   this->csi_manager_.init(
@@ -45,7 +49,10 @@ void ESpectreComponent::setup() {
     this->selected_subcarriers_,
     this->segmentation_threshold_,
     this->segmentation_window_size_,
-    this->traffic_generator_rate_
+    this->traffic_generator_rate_,
+    this->hampel_enabled_,
+    this->hampel_window_,
+    this->hampel_threshold_
   );
   
   // 4. Register WiFi lifecycle handlers
@@ -62,7 +69,7 @@ void ESpectreComponent::on_wifi_connected_() {
   // Enable CSI using CSI Manager with periodic callback
   if (!this->csi_manager_.is_enabled()) {
     ESP_ERROR_CHECK(this->csi_manager_.enable(
-      [this](const csi_features_t* features, csi_motion_state_t state) {
+      [this](csi_motion_state_t state) {
 
         // Don't publish until ready
         if (!this->ready_to_publish_) return;
@@ -71,7 +78,7 @@ void ESpectreComponent::on_wifi_connected_() {
         this->sensor_publisher_.log_status(TAG, &this->csi_processor_, state, this->traffic_generator_rate_);
         
         // Publish all sensors
-        this->sensor_publisher_.publish_all(&this->csi_processor_, this->features_enabled_ ? &this->current_features_ : nullptr, state);
+        this->sensor_publisher_.publish_all(&this->csi_processor_, state);
       }
     ));
   }
@@ -148,21 +155,13 @@ void ESpectreComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "    Rate: %u pps", this->traffic_generator_rate_);
   ESP_LOGCONFIG(TAG, "    Status: %s", this->traffic_generator_.is_running() ? "Running" : "Stopped");
   
-  // Features
-  ESP_LOGCONFIG(TAG, "  CSI Features: %s", this->features_enabled_ ? "Enabled" : "Disabled");
-  
-  // Filters
-  ESP_LOGCONFIG(TAG, "  Signal Filters:");
-  ESP_LOGCONFIG(TAG, "    Butterworth (8Hz): %s", this->butterworth_enabled_ ? "ON" : "OFF");
-  ESP_LOGCONFIG(TAG, "    Wavelet Denoising: %s", this->wavelet_enabled_ ? "ON" : "OFF");
-  if (this->wavelet_enabled_) {
-    ESP_LOGCONFIG(TAG, "      Level: %d, Threshold: %.1f", this->wavelet_level_, this->wavelet_threshold_);
-  }
-  ESP_LOGCONFIG(TAG, "    Hampel Outlier: %s", this->hampel_enabled_ ? "ON" : "OFF");
+  // Hampel Filter
+  ESP_LOGCONFIG(TAG, "  Hampel Filter (Turbulence):");
+  ESP_LOGCONFIG(TAG, "    Enabled: %s", this->hampel_enabled_ ? "YES" : "NO");
   if (this->hampel_enabled_) {
-    ESP_LOGCONFIG(TAG, "      Threshold: %.1f MAD", this->hampel_threshold_);
+    ESP_LOGCONFIG(TAG, "    Window: %d packets", this->hampel_window_);
+    ESP_LOGCONFIG(TAG, "    Threshold: %.1f MAD", this->hampel_threshold_);
   }
-  ESP_LOGCONFIG(TAG, "    Savitzky-Golay: %s", this->savgol_enabled_ ? "ON" : "OFF");
   
   // Sensors Status
   ESP_LOGCONFIG(TAG, "  Sensors:");

@@ -1,8 +1,8 @@
 /*
  * ESPectre - WiFi Lifecycle Manager
  * 
- * Manages WiFi connection lifecycle and service startup/shutdown.
- * Coordinates CSI, Traffic Generator, and NBVI Calibration.
+ * Manages WiFi connection lifecycle and coordinates service startup/shutdown.
+ * Handles CSI, Traffic Generator, and NBVI Calibration orchestration.
  * 
  * Author: Francesco Pace <francesco.pace@gmail.com>
  * License: GPLv3

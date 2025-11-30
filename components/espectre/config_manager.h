@@ -26,14 +26,9 @@ struct ESpectreConfig {
   float segmentation_threshold;
   uint16_t segmentation_window_size;
   uint32_t traffic_generator_rate;
-  bool features_enabled;
-  bool butterworth_enabled;
-  bool wavelet_enabled;
-  uint8_t wavelet_level;
-  float wavelet_threshold;
   bool hampel_enabled;
+  uint8_t hampel_window;
   float hampel_threshold;
-  bool savgol_enabled;
 };
 
 /**

@@ -4,6 +4,8 @@
 
 This section presents the advanced analysis tools developed to optimize the ESPectre motion-detection system. These tools support data-driven parameter tuning, algorithm validation, and scientific analysis of CSI-based motion detection.
 
+📊 **For ESPectre production performance metrics and benchmarks**, see [PERFORMANCE.md](../../PERFORMANCE.md) in the main repository.
+
 ## 📋 Table of Contents
 
 - [Data Collection](#data-collection)
@@ -391,23 +393,11 @@ NBVICalibrator(
 - Test script uses `buffer_size=500` and `window_size=100` to simulate ESP32-C6 memory constraints
 - README recommends `buffer_size=1000` for optimal performance when memory allows
 
-### Future C Implementation
+### C++ Implementation (ESPHome)
 
-Planned configuration structure for ESP32-C6 firmware:
+The NBVI algorithm is now fully implemented in the ESPHome component (`components/espectre/calibration_manager.cpp`). The calibration runs automatically at first boot and can be triggered via factory reset.
 
-```c
-// For ESP32 deployment
-nbvi_config_t config = {
-    .use_percentile = true,          // Percentile-based (recommended)
-    .percentile = 10,                // 10th percentile
-    .analysis_buffer_size = 1000,    // 10s @ 100Hz (or 500 if memory-constrained)
-    .window_size = 100,              // Window size for baseline detection
-    .window_step = 50,               // Step size for sliding window
-    .alpha = 0.3f,                   // NBVI weighting
-    .min_spacing = 3,                // Spectral de-correlation
-    .noise_gate_percentile = 10      // Exclude weak subcarriers
-};
-```
+See the main [ESPectre documentation](https://github.com/francescopace/espectre) for configuration details.
 
 ## 📊 Usage Examples
 
@@ -663,9 +653,14 @@ baseline_windows = [0.3, 0.2, 0.3]  # Automatically found!
 
 ### Integration with MVS Detection
 
-**Pipeline**:
+**Pipeline (Micro-ESPectre)**:
 ```
 CSI Data → NBVI Selection → MVS Detection → MQTT Publishing
+```
+
+**Pipeline (ESPHome)**:
+```
+CSI Data → NBVI Selection → MVS Detection → ESPHome Native API → Home Assistant
 ```
 
 1. **NBVI Selection** (one-time, at boot):
@@ -685,58 +680,12 @@ CSI Data → NBVI Selection → MVS Detection → MQTT Publishing
 
 ## 📖 References
 
-1. **Mitigation of CSI Temporal Phase Rotation** - PMC  
-   https://pmc.ncbi.nlm.nih.gov/articles/PMC6263436/  
-   *B2B calibration methods for phase analysis*
-
-2. **ESP32-C6 Wi-Fi Driver Documentation** - Espressif  
-   https://docs.espressif.com/projects/esp-idf/en/stable/esp32c6/api-guides/wifi.html  
-   *IEEE 802.11n/ax CSI specifications*
-
-4. **CSI-based Passive Intrusion Detection** - NIH  
-   https://pmc.ncbi.nlm.nih.gov/articles/PMC11630712/  
-   *Multipath components and subcarrier sensitivity*
-
-5. **Time-Selective RNN for Multi-Room Detection** - arXiv  
-   https://arxiv.org/html/2304.13107v2  
-   *Environment-dependent channel optimization*
-
-6. **CIRSense: Rethinking WiFi Sensing** - arXiv  
-   https://arxiv.org/html/2510.11374v1  
-   *SSNR optimization for sensing applications*
-
-7. **Wi-Fi CSI for Human Activity Recognition** - UBC  
-   https://open.library.ubc.ca/media/stream/pdf/24/1.0365967/4  
-   *Baseline detection and calibration-free approaches*
-
-8. **MVS Segmentation** - ResearchGate  
-   https://www.researchgate.net/figure/MVS-segmentation-a-the-fused-CSI-stream-b-corresponding-moving-variance-sequence_fig6_326244454  
-   *Moving Variance Segmentation algorithm*
-
-9. **CSI-F: Feature Fusion Method** - MDPI  
-   https://www.mdpi.com/1424-8220/24/3/862  
-   *Hampel filter and statistical robustness*
-
-11. **Linear-Complexity Subcarrier Selection** - ResearchGate  
-   https://www.researchgate.net/publication/397240630  
-   *Computational efficiency for embedded systems*
-
-13. **Passive Indoor Localization** - PMC  
-   https://pmc.ncbi.nlm.nih.gov/articles/PMC6412876/  
-   *SNR considerations and noise gate strategies*
-
-16. **Subcarrier Selection for Indoor Localization** - ResearchGate  
-   https://www.researchgate.net/publication/326195991  
-   *Spectral de-correlation and feature diversity*
-
-17. **Indoor Motion Detection in Different Environments** - PMC  
-   https://pmc.ncbi.nlm.nih.gov/articles/PMC6068568/  
-   *False positive reduction and sensitivity optimization*
+For the complete list of scientific references and academic papers that informed the development of these algorithms, see the **[References section in the main README](../../README.md#-references)**.
 
 ## ESPectre Project
-- [ESPectre Main README](https://github.com/francescopace/espectre)
-- [Micro-ESPectre README](../README.md)
-- [esp32-microcsi](https://github.com/francescopace/esp32-microcsi)
+- [ESPectre (ESPHome)](https://github.com/francescopace/espectre) - Main project with native Home Assistant integration
+- [Micro-ESPectre](../README.md) - Python implementation for MicroPython
+- [esp32-microcsi](https://github.com/francescopace/esp32-microcsi) - MicroPython CSI module
 
 ## 👤 Author
 

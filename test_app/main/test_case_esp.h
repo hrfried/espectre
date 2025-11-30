@@ -1,9 +1,13 @@
 /*
- * Custom TEST_CASE macro for ESP-IDF that exports test descriptors
- * This is needed because the standard TEST_CASE uses static storage
- * and constructor attributes which don't work properly in ESP-IDF
+ * ESPectre - Custom TEST_CASE Macro for ESP-IDF
  * 
- * Uses symbolic names instead of line numbers for better maintainability
+ * Custom TEST_CASE macro that exports test descriptors.
+ * Uses symbolic names instead of line numbers for better maintainability.
+ * Required because standard TEST_CASE uses static storage and constructor
+ * attributes which don't work properly in ESP-IDF.
+ * 
+ * Author: Francesco Pace <francesco.pace@gmail.com>
+ * License: GPLv3
  */
 
 #ifndef TEST_CASE_ESP_H
