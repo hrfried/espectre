@@ -1,4 +1,4 @@
-# ESP-IDF
+# ESP-IDF (legacy)
 esp-idf/
 build/
 sdkconfig
@@ -6,18 +6,43 @@ sdkconfig.old
 dependencies.lock
 managed_components/
 
-# Project data
-.vscode/
-docs/
-test_results/
-__pycache__
+# PlatformIO
+test/.pio/
+test/.vscode/
+test/.clang_complete
+test/.gcc-flags.json
+*.elf
+*.bin
+*.map
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
 .cache
 
-# Other
-.DS_Store
-.log.
+# Test results
+test_results/
+test/test_output.log
+test/test_results/
 
 # ESPHome
 esphome-env/
 .esphome/
 secrets.yaml
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+.log.
+
+# Documentation
+docs/
