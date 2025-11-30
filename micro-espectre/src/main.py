@@ -1,13 +1,14 @@
 """
 Micro-ESPectre - Main Application
-Motion detection using WiFi CSI and MVS segmentation
+
+Motion detection using WiFi CSI and MVS segmentation.
+Main entry point for the Micro-ESPectre system running on ESP32-C6.
 
 Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3
 """
 import network
 import time
-import _thread
 import gc
 from src.segmentation import SegmentationContext
 from src.mqtt.handler import MQTTHandler
@@ -29,15 +30,10 @@ except ImportError:
     WIFI_PASSWORD = config.WIFI_PASSWORD
 
 
-# Global state (shared between threads)
+# Global state for calibration mode
 class GlobalState:
     def __init__(self):
-        self.packets_processed = 0
-        self.current_state = 0  # STATE_IDLE
-        self.current_variance = 0.0
-        self.current_threshold = 0.0
         self.calibration_mode = False  # Flag to suspend main loop during calibration
-        self.lock = _thread.allocate_lock()
 
 
 g_state = GlobalState()
@@ -106,7 +102,7 @@ def format_progress_bar(score, threshold, width=20):
     return f"{bar} {percent}%"
 
 
-def run_nbvi_calibration(wlan, nvs, seg):
+def run_nbvi_calibration(wlan, nvs, seg, traffic_gen):
     """
     Run NBVI calibration
     
@@ -114,6 +110,7 @@ def run_nbvi_calibration(wlan, nvs, seg):
         wlan: WLAN instance
         nvs: NVSStorage instance
         seg: SegmentationContext instance
+        traffic_gen: TrafficGenerator instance
     
     Returns:
         bool: True if calibration successful
@@ -149,7 +146,7 @@ def run_nbvi_calibration(wlan, nvs, seg):
         packets_read += 1
         
         if frame:
-            csi_data = frame['data'][:128]
+            csi_data = frame[5][:128]  # frame[5] = data (tuple API)
             calibration_progress = nbvi_calibrator.add_packet(csi_data)
             timeout_counter = 0  # Reset timeout on successful read
             
@@ -164,9 +161,10 @@ def run_nbvi_calibration(wlan, nvs, seg):
             # Debug: print if stuck
             if timeout_counter % 1000 == 0:
                 # Check if traffic generator is still running
-                tg_running = traffic_gen.is_running() if 'traffic_gen' in dir() else False
-                tg_count = traffic_gen.get_packet_count() if 'traffic_gen' in dir() else 0
-                print(f"NBVI: Waiting for CSI... ({timeout_counter/1000:.0f}s, progress: {calibration_progress}, TG running: {tg_running}, TG packets: {tg_count})")
+                tg_running = traffic_gen.is_running()
+                tg_count = traffic_gen.get_packet_count()
+                dropped = wlan.csi_dropped()
+                print(f"NBVI: Waiting for CSI... ({timeout_counter/1000:.0f}s, progress: {calibration_progress}, TG running: {tg_running}, TG packets: {tg_count}, dropped: {dropped})")
             
             if timeout_counter >= max_timeout:
                 print(f"NBVI: Timeout waiting for CSI packets (collected {calibration_progress}/{config.NBVI_BUFFER_SIZE})")
@@ -218,55 +216,6 @@ def run_nbvi_calibration(wlan, nvs, seg):
     return success
 
 
-def mqtt_publish_task(mqtt_handler, wlan):
-    """MQTT publish task (runs in separate thread with increased stack)"""
-    last_packets_processed = 0
-    last_dropped = 0
-    
-    while True:
-        try:
-            # Periodic garbage collection to prevent memory fragmentation
-            gc.collect()
-            
-            time.sleep(1.0)
-            current_time = time.ticks_ms()
-            
-            mqtt_handler.check_messages()
-            
-            with g_state.lock:
-                current_state = g_state.current_state
-                current_variance = g_state.current_variance
-                current_threshold = g_state.current_threshold
-                packets_processed = g_state.packets_processed
-            
-            packet_delta = packets_processed - last_packets_processed
-            last_packets_processed = packets_processed
-            
-            dropped = wlan.csi_dropped()
-            dropped_delta = dropped - last_dropped
-            last_dropped = dropped
-            
-            mqtt_handler.update_packet_count(packets_processed, dropped)
-            
-            state_str = 'MOTION' if current_state == 1 else 'IDLE'
-            progress = current_variance / current_threshold if current_threshold > 0 else 0
-            progress_bar = format_progress_bar(progress, 1.0)
-            
-            print(f"📊 {progress_bar} | pkts:{packet_delta} drop:{dropped_delta} | "
-                  f"mvmt:{current_variance:.4f} thr:{current_threshold:.4f} | {state_str}")
-            
-            mqtt_handler.publish_state(
-                current_variance,
-                current_state,
-                current_threshold,
-                packet_delta,
-                dropped_delta,
-                current_time
-            )
-            
-        except Exception as e:
-            print(f"MQTT error: {e}")
-            time.sleep(1)
 
 
 def main():
@@ -302,7 +251,19 @@ def main():
     
     # NBVI Auto-Calibration at boot (if enabled and needed)
     if config.NBVI_ENABLED and not saved_config:
-        run_nbvi_calibration(wlan, nvs, seg)
+        run_nbvi_calibration(wlan, nvs, seg, traffic_gen)
+        
+        # Restart traffic generator after calibration to clear socket buffers
+        # and prevent ENOMEM errors in main loop
+        if traffic_gen.is_running():
+            print('🔄 Restarting traffic generator after calibration...')
+            traffic_gen.stop()
+            time.sleep(0.5)
+            gc.collect()  # Free memory before restart
+            if traffic_gen.start(traffic_rate):
+                print(f'✅ Traffic generator restarted ({traffic_rate} pps)')
+            else:
+                print('⚠️  Failed to restart traffic generator')
     else:
         print('🧬 NBVI: Auto-calibration disabled or already calibrated')
     
@@ -313,9 +274,6 @@ def main():
     # Publish info after boot (always, to show current configuration)
     print('📡 Publishing system info...')
     mqtt_handler.publish_info()
-    
-    # Start MQTT publish task
-    _thread.start_new_thread(mqtt_publish_task, (mqtt_handler, wlan))
     
     print('')
     print('╔═══════════════════════════════════════════════════════════╗')
@@ -332,8 +290,16 @@ def main():
     print('╚═══════════════════════════════════════════════════════════╝')
     print('')
     
-    # Main CSI processing loop
+    # Main CSI processing loop with integrated MQTT publishing
     packet_counter = 0
+    packets_since_publish = 0
+    last_dropped = 0
+    last_publish_time = time.ticks_ms()
+    
+    # Calculate optimal sleep based on traffic rate
+    traffic_rate = traffic_gen.get_rate() if traffic_gen.is_running() else 100
+    publish_rate = traffic_rate
+       
     try:
         while True:
             # Suspend main loop during calibration
@@ -341,51 +307,67 @@ def main():
                 time.sleep_ms(100)
                 continue
             
+            # Check MQTT messages (non-blocking)
+            mqtt_handler.check_messages()
+            
             frame = wlan.csi_read()
             
             if frame:
                 # ESP32-C6 provides 512 bytes but we use only first 128 bytes
                 # This avoids corrupted data in the extended buffer
-                csi_data = frame['data'][:128]
+                csi_data = frame[5][:128]  # frame[5] = data (tuple API)
                 turbulence = seg.calculate_spatial_turbulence(csi_data, config.SELECTED_SUBCARRIERS)
                 seg.add_turbulence(turbulence)
                 metrics = seg.get_metrics()
                 
-                with g_state.lock:
-                    g_state.packets_processed += 1
-                    g_state.current_state = metrics['state']
-                    g_state.current_variance = metrics['moving_variance']
-                    g_state.current_threshold = metrics['threshold']
+                packets_since_publish += 1
                 
-                # Periodic garbage collection in main loop (every 100 packets)
+                # Publish every N packets (where N = traffic_rate)
+                if packets_since_publish >= publish_rate:
+                    current_time = time.ticks_ms()
+                    time_delta = time.ticks_diff(current_time, last_publish_time)
+                    
+                    # Calculate packets per second
+                    pps = int((packets_since_publish * 1000) / time_delta) if time_delta > 0 else 0
+                    
+                    dropped = wlan.csi_dropped()
+                    dropped_delta = dropped - last_dropped
+                    last_dropped = dropped
+                    
+                    state_str = 'MOTION' if metrics['state'] == 1 else 'IDLE'
+                    progress = metrics['moving_variance'] / metrics['threshold'] if metrics['threshold'] > 0 else 0
+                    progress_bar = format_progress_bar(progress, metrics['threshold'])
+                    print(f"📊 {progress_bar} | pkts:{packets_since_publish} drop:{dropped_delta} pps:{pps} | "
+                          f"mvmt:{metrics['moving_variance']:.4f} thr:{metrics['threshold']:.4f} | {state_str}")
+                    
+                    mqtt_handler.publish_state(
+                        metrics['moving_variance'],
+                        metrics['state'],
+                        metrics['threshold'],
+                        packets_since_publish,
+                        dropped_delta
+                    )
+                    
+                    packets_since_publish = 0
+                    last_publish_time = current_time
+                
+                # Periodic garbage collection (every 100 packets)
                 packet_counter += 1
                 if packet_counter >= 100:
                     gc.collect()
                     packet_counter = 0
+                
             else:
-                # Minimal sleep to yield to other threads
-                time.sleep_us(100)
+                time.sleep_us(10)  # Small sleep to yield CPU
     
     except KeyboardInterrupt:
         print('\n\nStopping...')
     
     finally:
         wlan.csi_disable()
-        mqtt_handler.disconnect()
-        
+        mqtt_handler.disconnect()        
         if traffic_gen.is_running():
             traffic_gen.stop()
-        
-        stats = mqtt_handler.get_stats()
-        print('\n' + '='*60)
-        print('Statistics:')
-        print(f'  Packets processed: {g_state.packets_processed}')
-        print(f'  Dropped packets: {wlan.csi_dropped()}')
-        print(f'  MQTT published: {stats["published"]}, skipped: {stats["skipped"]}')
-        if traffic_gen.get_packet_count() > 0:
-            print(f'  Traffic generated: {traffic_gen.get_packet_count()} packets')
-        print('='*60)
-
 
 if __name__ == '__main__':
     main()

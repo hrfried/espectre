@@ -1,3 +1,13 @@
+"""
+ESPectre Sensor Platform
+
+ESPHome sensor platform for ESPectre motion detection metrics.
+Provides movement intensity and threshold sensors.
+
+Author: Francesco Pace <francesco.pace@gmail.com>
+License: GPLv3
+"""
+
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor

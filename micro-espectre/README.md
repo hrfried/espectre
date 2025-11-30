@@ -129,8 +129,36 @@ Micro-ESPectre uses MQTT for maximum flexibility - it's not tied to Home Assista
 ### Software
 - MicroPython with esp32-microcsi module installed
 - MQTT broker (Home Assistant, Mosquitto, etc.)
+- Python 3.12 (for deployment scripts, CLI, and analysis tools)
 
 ## 🚀 Quick Start
+
+### 0. Python Environment Setup
+
+Before using the deployment scripts, CLI, or analysis tools, you need to set up a Python virtual environment:
+
+```bash
+# Navigate to micro-espectre directory
+cd micro-espectre
+
+# Create virtual environment
+python3 -m venv venv
+
+# Activate virtual environment
+source venv/bin/activate  # On macOS/Linux
+# or
+venv\Scripts\activate  # On Windows
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+**Important**: The virtual environment must be activated whenever you want to:
+- Deploy code to ESP32 (`./deploy.sh`)
+- Use the interactive CLI (`python espectre-cli.py`)
+- Run analysis tools (`python tools/*.py`)
+
+**Tip**: To deactivate the virtual environment when done, simply run `deactivate`.
 
 ### 1. Install MicroPython with CSI Support 
 
@@ -278,6 +306,9 @@ The `tools/` directory contains a comprehensive suite of Python scripts for CSI 
 # Collect CSI data samples
 ./deploy.sh /dev/cu.usbmodem* --collect-baseline
 ./deploy.sh /dev/cu.usbmodem* --collect-movement
+
+# Activate virtual environment
+source venv/bin/activate  # On macOS/Linux
 
 # Run analysis
 cd tools
@@ -457,17 +488,13 @@ When 802.11bf is widely adopted, applications like this project will become:
 
 Micro-ESPectre includes an interactive command-line interface (`espectre-cli.py`) for easy device control and monitoring via MQTT.
 
-### Installation
-
-```bash
-# From the project root directory
-pip install -r requirements.txt
-```
+**Prerequisites**: Make sure you have completed the [Python Environment Setup](#-quick-start) (step 0) before using the CLI.
 
 ### Usage
 
 ```bash
-cd micro-espectre
+# Activate virtual environment (if not already active)
+source venv/bin/activate  # On macOS/Linux
 
 # Connect to default broker (homeassistant.local)
 python espectre-cli.py
@@ -524,7 +551,6 @@ Publish commands to `home/espectre/node1/cmd`:
 | `segmentation_window_size` | `segmentation_window_size 100` | Set window size |
 | `subcarrier_selection` | `subcarrier_selection 11,12,13,...` | Set subcarriers |
 | `traffic_generator_rate` | `traffic_generator_rate 100` | Set packet rate |
-| `smart_publishing` | `smart_publishing on` | Enable/disable smart publishing |
 | `factory_reset` | `factory_reset` | Reset to defaults |
 
 ### Configuration Persistence

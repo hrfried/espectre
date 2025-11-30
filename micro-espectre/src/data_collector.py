@@ -1,6 +1,8 @@
 """
 Micro-ESPectre - CSI Data Collector with Metadata
-Collects CSI packets with full metadata (RSSI, noise_floor, SNR, etc.)
+
+Collects CSI packets with full metadata (RSSI, noise_floor, SNR, etc.).
+Used for offline analysis and algorithm development.
 
 Usage:
     1. Deploy to ESP32: ampy --port /dev/ttyUSB0 put data_collector.py
@@ -80,15 +82,15 @@ def collect_csi_packets(wlan, label, max_packets=MAX_PACKETS):
         while packet_count < max_packets:
             frame = wlan.csi_read()
             if frame:
-                # Extract values with defaults
+                # Extract values using tuple API
                 timestamp_ms = time.ticks_ms()
-                rssi = frame.get('rssi', -100)
-                noise_floor = frame.get('noise_floor', -95)
-                channel = frame.get('channel', 0)
-                mcs = frame.get('mcs', 0)
-                sig_mode = frame.get('sig_mode', 0)
-                cwb = frame.get('cwb', 0)
-                csi_data = frame['data'][:128]
+                rssi = frame[0]           # frame[0] = rssi
+                noise_floor = frame[16]   # frame[16] = noise_floor
+                channel = frame[1]        # frame[1] = channel
+                mcs = frame[8]            # frame[8] = mcs
+                sig_mode = frame[7]       # frame[7] = sig_mode
+                cwb = frame[9]            # frame[9] = cwb
+                csi_data = frame[5][:128] # frame[5] = data
                 
                 # Pack and write directly
                 packed_data = struct.pack(PACKET_FORMAT,

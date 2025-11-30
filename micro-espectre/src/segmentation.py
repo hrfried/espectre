@@ -1,6 +1,8 @@
 """
 Micro-ESPectre - Moving Variance Segmentation (MVS)
-Pure Python implementation for MicroPython
+
+Pure Python implementation for MicroPython.
+Implements the MVS algorithm for motion detection using CSI turbulence variance.
 
 Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3
@@ -85,7 +87,7 @@ class SegmentationContext:
                     window_size=HAMPEL_WINDOW,
                     threshold=HAMPEL_THRESHOLD
                 )
-                print(f"HampelFilter initialized: window={HAMPEL_WINDOW}, threshold={HAMPEL_THRESHOLD}")
+                print(f"🧹 HampelFilter initialized: window={HAMPEL_WINDOW}, threshold={HAMPEL_THRESHOLD}")
             except Exception as e:
                 print(f"[ERROR] Failed to initialize HampelFilter: {e}")
                 self.hampel_filter = None

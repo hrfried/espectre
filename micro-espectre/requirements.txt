@@ -1,0 +1,16 @@
+# Micro-ESPectre Requirements
+# Python dependencies for Micro-ESPectre CLI and analysis tools
+
+# CLI Tool Dependencies
+paho-mqtt>=1.6.1        # MQTT client for espectre-cli.py
+colorama>=0.4.6         # Terminal colors for CLI
+python-dotenv>=1.0.0    # Environment variables support
+PyYAML>=6.0             # YAML parsing for CLI
+prompt_toolkit>=3.0.0   # Interactive CLI with autocompletion
+pygments>=2.19.2        # Syntax highlighting for CLI
+
+# Analysis Tools Dependencies
+numpy>=1.24.0           # Numerical computing for data analysis
+matplotlib>=3.7.0       # Plotting and visualization
+scipy>=1.10.0           # Scientific computing (signal processing)
+PyWavelets>=1.4.0       # Wavelet transforms (pywt)

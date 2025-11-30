@@ -1,6 +1,8 @@
 """
 Micro-ESPectre - WiFi Traffic Generator
-Generates continuous DNS queries to ensure CSI data availability
+
+Generates UDP traffic to ensure continuous CSI data flow.
+Essential for maintaining stable CSI packet reception on ESP32-C6.
 
 Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3

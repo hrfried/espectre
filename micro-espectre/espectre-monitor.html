@@ -861,9 +861,7 @@
                 <!-- Global Action Buttons -->
                 <div
                     style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; padding-top: 10px; border-top: 2px solid #e0e0e0;">
-                    <button class="btn btn-info" id="smartPublishingBtn" onclick="toggleSmartPublishing()">Smart
-                        Publishing: ON</button>
-                    <button class="btn btn-warning" onclick="requestInfo()">Reload info</button>
+                    <button class="btn btn-warning" onclick="requestInfo()">Reload Info</button>
                     <button class="btn btn-success btn-sm" onclick="requestStats()">Statistics</button>
                     <button class="btn btn-danger" onclick="factoryReset()">Factory Reset</button>
                 </div>
@@ -913,7 +911,6 @@
         let currentFeatures = null;
         let isPaused = false;
         let pendingData = [];
-        let smartPublishingEnabled = true; // Track smart publishing state
 
         const chartData = {
             labels: [],
@@ -999,7 +996,7 @@
                             beginAtZero: true,
                             title: {
                                 display: true,
-                                text: 'CSI Packets/sec'
+                                text: 'CSI Packets'
                             },
                             grid: {
                                 drawOnChartArea: false
@@ -1283,50 +1280,6 @@
             });
         }
 
-        // Apply All Configuration (Detection Parameters + Filters)
-        function applyAllConfiguration() {
-            // Detection Parameters
-            const segThreshold = parseFloat(document.getElementById('segThresholdValue').value);
-            const windowSize = parseInt(document.getElementById('windowSizeValue').value);
-            const trafficRate = parseInt(document.getElementById('trafficRateValue').value);
-            const featuresEnable = document.getElementById('featuresEnable').checked;
-            const smartPublishing = document.getElementById('smartPublishing').checked;
-
-            // Filters
-            const hampelEnabled = document.getElementById('hampelFilter').checked;
-            const hampelThreshold = parseFloat(document.getElementById('hampelThresholdValue').value);
-            const savgolEnabled = document.getElementById('savgolFilter').checked;
-            const butterworthEnabled = document.getElementById('butterworthFilter').checked;
-            const waveletEnabled = document.getElementById('waveletFilter').checked;
-            const waveletLevel = parseInt(document.getElementById('waveletLevelValue').value);
-            const waveletThreshold = parseFloat(document.getElementById('waveletThresholdValue').value);
-
-            // Send all commands with delays
-            let delay = 0;
-            sendCommand('segmentation_threshold', { value: segThreshold });
-            delay += 100;
-            setTimeout(() => sendCommand('segmentation_window_size', { value: windowSize }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('traffic_generator_rate', { value: trafficRate }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('features_enable', { enabled: featuresEnable }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('smart_publishing', { enabled: smartPublishing }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('hampel_filter', { enabled: hampelEnabled }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('hampel_threshold', { value: hampelThreshold }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('savgol_filter', { enabled: savgolEnabled }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('butterworth_filter', { enabled: butterworthEnabled }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('wavelet_filter', { enabled: waveletEnabled }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('wavelet_level', { value: waveletLevel }), delay);
-            delay += 100;
-            setTimeout(() => sendCommand('wavelet_threshold', { value: waveletThreshold }), delay);
-        }
 
         // System Info Functions
         function requestInfo() {
@@ -1418,28 +1371,6 @@
             const arrow = document.getElementById(sectionId + 'Arrow');
             content.classList.toggle('collapsed');
             arrow.classList.toggle('rotate');
-        }
-
-        // Toggle Smart Publishing
-        function toggleSmartPublishing() {
-            const btn = document.getElementById('smartPublishingBtn');
-
-            // Toggle the state
-            smartPublishingEnabled = !smartPublishingEnabled;
-
-            // Update button appearance by switching classes
-            if (smartPublishingEnabled) {
-                btn.classList.remove('btn-secondary');
-                btn.classList.add('btn-info');
-                btn.textContent = 'Smart Publishing: ON';
-            } else {
-                btn.classList.remove('btn-info');
-                btn.classList.add('btn-secondary');
-                btn.textContent = 'Smart Publishing: OFF';
-            }
-
-            // Send command to device
-            sendCommand('smart_publishing', { enabled: smartPublishingEnabled });
         }
 
         // Apply Detection Configuration Only
@@ -1704,19 +1635,6 @@
             html += `</div>`;
             html += `</div>`;
 
-            // Counters Section
-            html += `<div class="stat-section">`;
-            html += `<div class="stat-section-title">📈 Counters</div>`;
-            html += `<div class="stat-line">`;
-            html += `<span class="stat-label">📦 Packets Processed</span>`;
-            html += `<span class="stat-value highlight">${formatNumber(stats.packets_processed)}</span>`;
-            html += `</div>`;
-            html += `<div class="stat-line">`;
-            html += `<span class="stat-label">❌ Packets Dropped</span>`;
-            html += `<span class="stat-value ${stats.packets_dropped > 0 ? 'warning' : 'success'}">${formatNumber(stats.packets_dropped)}</span>`;
-            html += `</div>`;
-            html += `</div>`;
-
             body.innerHTML = html;
 
             modal.appendChild(header);
@@ -1846,21 +1764,6 @@
             if (config.options) {
                 if (config.options.features_enabled !== undefined) {
                     document.getElementById('featuresEnable').checked = config.options.features_enabled;
-                }
-                if (config.options.smart_publishing_enabled !== undefined) {
-                    smartPublishingEnabled = config.options.smart_publishing_enabled;
-
-                    // Update button appearance by switching classes
-                    const btn = document.getElementById('smartPublishingBtn');
-                    if (smartPublishingEnabled) {
-                        btn.classList.remove('btn-secondary');
-                        btn.classList.add('btn-info');
-                        btn.textContent = 'Smart Publishing: ON';
-                    } else {
-                        btn.classList.remove('btn-info');
-                        btn.classList.add('btn-secondary');
-                        btn.textContent = 'Smart Publishing: OFF';
-                    }
                 }
             }
 

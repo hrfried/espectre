@@ -88,7 +88,6 @@ class EspectreCLI:
             'wavelet_filter': {'on': None, 'off': None},
             'wavelet_level': {'1': None, '2': None, '3': None},
             'wavelet_threshold': None,
-            'smart_publishing': {'on': None, 'off': None},
             'traffic_generator_rate': None,
             'factory_reset': None,
             'webui': None,
@@ -249,8 +248,6 @@ class EspectreCLI:
                 self.cmd_value("wavelet_level", args, int)
             elif cmd in ["wavelet_threshold", "wvt"]:
                 self.cmd_value("wavelet_threshold", args, float)
-            elif cmd in ["smart_publishing", "smart", "sp"]:
-                self.cmd_toggle("smart_publishing", args)
             elif cmd in ["traffic_generator_rate", "tgr", "traffic"]:
                 self.cmd_value("traffic_generator_rate", args, int)
             elif cmd in ["factory_reset", "reset", "fr"]:
@@ -361,8 +358,7 @@ class EspectreCLI:
 <ansiyellow><b>System Commands:</b></ansiyellow>
   <ansigreen>info|i</ansigreen>                                     Show current configuration (static)
   <ansigreen>stats|s</ansigreen>                                    Show runtime statistics (dynamic)
-  <ansigreen>smart_publishing|smart|sp</ansigreen> &lt;on|off&gt;         Enable/disable smart publishing
-  <ansigreen>traffic_generator_rate|tgr|traffic</ansigreen> &lt;pps&gt;   Set traffic rate (0=off, 5-100, rec: 20)
+  <ansigreen>traffic_generator_rate|tgr|traffic</ansigreen> &lt;pps&gt;   Set traffic rate (0=off, 0-1000, rec: 100)
   <ansigreen>factory_reset|reset|fr</ansigreen>                     Reset all settings to factory defaults
 
 <ansiyellow><b>Utility Commands:</b></ansiyellow>

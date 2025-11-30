@@ -56,12 +56,6 @@ HAMPEL_THRESHOLD = 4.0         # Outlier detection threshold in MAD units (2.0-4
 SUBCARRIER_INDEX_MIN = 0
 SUBCARRIER_INDEX_MAX = 63
 
-# Publishing Configuration
-# If SMART_PUBLISHING = False, messages are published every 1 secon
-SMART_PUBLISHING = False     # Only publish on significant changes
-DELTA_THRESHOLD = 0.05      # Minimum change to trigger publish (0.05 = 5%)
-MAX_PUBLISH_INTERVAL_MS = 5000  # Max time between publishes - heartbeat (5 seconds)
-
 # Traffic Generator Configuration
 # Generates WiFi traffic to ensure continuous CSI data
 TRAFFIC_RATE_MIN = 0          # Minimum rate (0=disabled)

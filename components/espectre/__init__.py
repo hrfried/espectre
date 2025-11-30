@@ -1,3 +1,13 @@
+"""
+ESPectre Test Component
+
+ESPHome test component for ESPectre WiFi CSI-based motion detection.
+Test environment configuration schema and component initialization.
+
+Author: Francesco Pace <francesco.pace@gmail.com>
+License: GPLv3
+"""
+
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor, binary_sensor

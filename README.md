@@ -94,48 +94,6 @@ The mathematical approach provides excellent movement detection without the comp
 1. **Setup & Installation**: Follow the complete guide in [SETUP.md](SETUP.md)
 2. **Tuning**: Optimize for your environment with [TUNING.md](TUNING.md)
 
-### Minimal Configuration
-
-```yaml
-esphome:
-  name: espectre
-
-esp32:
-  variant: ESP32C6
-  framework:
-    type: esp-idf
-    version: 5.5.1
-    sdkconfig_options:
-      CONFIG_ESP_WIFI_CSI_ENABLED: y
-      CONFIG_ESP_WIFI_AMPDU_RX_ENABLED: y 
-
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  power_save_mode: NONE
-
-external_components:
-  - source: github://francescopace/espectre
-    components: [ espectre ]
-
-espectre:
-  traffic_generator_rate: 100
-  segmentation_threshold: 1.0
-
-binary_sensor:
-  - platform: espectre
-    motion:
-      name: "Motion Detected"
-      device_class: motion
-
-sensor:
-  - platform: espectre
-    movement:
-      name: "Movement Score"
-    threshold:
-      name: "Detection Threshold"
-```
-
 ---
 
 ## 📖 How It Works (Simple Version)

@@ -1,8 +1,8 @@
 """
 NBVI (Normalized Baseline Variability Index) Calibrator
 
-Automatic subcarrier selection using percentile-based baseline detection.
-Implements NBVI Weighted α=0.3 algorithm for optimal subcarrier selection.
+Automatic subcarrier selection based on baseline variability analysis.
+Identifies optimal subcarriers for motion detection using statistical analysis.
 
 Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3

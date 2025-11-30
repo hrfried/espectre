@@ -1,3 +1,13 @@
+"""
+ESPectre Binary Sensor Platform
+
+ESPHome binary sensor platform for ESPectre motion detection.
+Provides motion detection binary sensor with device class support.
+
+Author: Francesco Pace <francesco.pace@gmail.com>
+License: GPLv3
+"""
+
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import binary_sensor

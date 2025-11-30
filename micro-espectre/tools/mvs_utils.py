@@ -1,6 +1,9 @@
 """
 MVS Utilities - Common module for loading CSI data and MVS detection
 
+Shared utilities for analysis scripts.
+Provides data loading and MVS detection functions for offline analysis.
+
 Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3
 """

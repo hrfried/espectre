@@ -1,6 +1,8 @@
 """
 Micro-ESPectre - Configuration Persistence
-Simulates NVS storage using JSON file
+
+Uses ESP32 NVS (Non-Volatile Storage) for configuration persistence.
+Manages saving and loading of system configuration across reboots.
 
 Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3
@@ -127,9 +129,6 @@ class NVSStorage:
             },
             "subcarriers": {
                 "indices": config_module.SELECTED_SUBCARRIERS
-            },
-            "options": {
-                "smart_publishing": config_module.SMART_PUBLISHING
             }
         }
         
@@ -173,10 +172,5 @@ class NVSStorage:
         if "subcarriers" in config_data:
             config_module.SELECTED_SUBCARRIERS = config_data["subcarriers"]["indices"]
             print(f"📡 Subcarrier selection loaded: {config_module.SELECTED_SUBCARRIERS}")
-        
-        # Apply options
-        if "options" in config_data:
-            config_module.SMART_PUBLISHING = config_data["options"].get("smart_publishing", config_module.SMART_PUBLISHING)
-            print(f"📡 Smart publishing: {config_module.SMART_PUBLISHING}")
         
         return config_data

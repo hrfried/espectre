@@ -1,6 +1,8 @@
 """
 Micro-ESPectre - MQTT Commands Module
-Handles MQTT command processing (info, stats)
+
+Processes MQTT commands for remote configuration.
+Handles system configuration, calibration, and status queries via MQTT.
 
 Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3
@@ -44,12 +46,6 @@ class MQTTCommands:
         self.nbvi_calibration_func = nbvi_calibration_func
         self.response_topic = response_topic
         self.start_time = time.time()
-        self.packets_processed = 0
-        self.packets_dropped = 0
-        
-        # CPU usage estimation
-        self.last_stats_time = time.ticks_ms()
-        self.last_packets_count = 0
         
         # NVS storage for configuration persistence
         self.nvs = NVSStorage()
@@ -154,9 +150,6 @@ class MQTTCommands:
                 "threshold": round(self.seg.threshold, 2),
                 "window_size": self.seg.window_size
             },
-            "options": {
-                "smart_publishing_enabled": self.config.SMART_PUBLISHING
-            },
             "subcarriers": {
                 "indices": self.config.SELECTED_SUBCARRIERS,
                 "count": len(self.config.SELECTED_SUBCARRIERS)
@@ -171,44 +164,75 @@ class MQTTCommands:
         current_time = time.time()
         uptime_sec = current_time - self.start_time
         
-        # Get memory info
+        # Get memory info using ESP32 IDF heap info for more accurate data
         gc.collect()
-        free_mem = gc.mem_free()
-        alloc_mem = gc.mem_alloc()
-        total_mem = free_mem + alloc_mem
-        heap_usage = (alloc_mem / total_mem * 100) if total_mem > 0 else 0
+        heap_usage = 0.0
+        try:
+            import esp32
+            # Get detailed heap info for DATA regions (where MicroPython heap lives)
+            heap_regions = esp32.idf_heap_info(esp32.HEAP_DATA)
+            
+            # Sum up total and free bytes across all DATA heap regions
+            total_bytes = 0
+            free_bytes = 0
+            for region in heap_regions:
+                total, free, largest_block, min_free = region
+                total_bytes += total
+                free_bytes += free
+            
+            # Calculate usage percentage
+            if total_bytes > 0:
+                used_bytes = total_bytes - free_bytes
+                heap_usage = (used_bytes / total_bytes * 100.0)
+        except:
+            # Fallback to gc module if esp32.idf_heap_info is not available
+            free_mem = gc.mem_free()
+            alloc_mem = gc.mem_alloc()
+            total_mem = free_mem + alloc_mem
+            heap_usage = (alloc_mem / total_mem * 100.0) if total_mem > 0 else 0.0
         
-        # Estimate CPU usage based on packet processing rate
-        current_ticks = time.ticks_ms()
-        time_delta = time.ticks_diff(current_ticks, self.last_stats_time)
-        packet_delta = self.packets_processed - self.last_packets_count
-        
-        # Estimate: assume ~5ms per packet processing, calculate % of time spent
-        if time_delta > 0:
-            processing_time = packet_delta * 5  # ms
-            cpu_usage = min(100.0, (processing_time / time_delta) * 100)
-        else:
-            cpu_usage = 0.0
-        
-        # Update for next call
-        self.last_stats_time = current_ticks
-        self.last_packets_count = self.packets_processed
+        # Calculate CPU usage using FreeRTOS task info
+        cpu_usage = None
+        try:
+            import esp32
+            # Get task runtime statistics
+            total_runtime, tasks = esp32.idf_task_info()
+            
+            if total_runtime and total_runtime > 0:
+                # Calculate total CPU time used (excluding IDLE tasks)
+                cpu_time = 0
+                for task in tasks:
+                    task_id, name, state, priority, runtime, stack_hwm, core_id = task
+                    # Skip IDLE tasks (they represent unused CPU time)
+                    if runtime and 'IDLE' not in name:
+                        cpu_time += runtime
+                
+                # CPU usage = (non-idle time / total time) * 100
+                cpu_usage = (cpu_time / total_runtime * 100.0) if total_runtime > 0 else 0.0
+                cpu_usage = min(100.0, max(0.0, cpu_usage))  # Clamp to 0-100%
+        except Exception as e:
+            # esp32.idf_task_info() not available or failed
+            # This can happen if CONFIG_FREERTOS_USE_TRACE_FACILITY is not enabled
+            # Don't send cpu_usage_percent in response
+            pass
         
         # Get current state
         state_str = 'motion' if self.seg.state == self.seg.STATE_MOTION else 'idle'
         
+        # Build response - only include cpu_usage_percent if available
         response = {
             "timestamp": int(current_time),
             "uptime": self.format_uptime(uptime_sec),
-            "cpu_usage_percent": round(cpu_usage, 1),
             "heap_usage_percent": round(heap_usage, 1),
             "state": state_str,
             "turbulence": round(self.seg.last_turbulence, 4),
             "movement": round(self.seg.current_moving_variance, 4),
-            "threshold": round(self.seg.threshold, 4),
-            "packets_processed": self.packets_processed,
-            "packets_dropped": self.packets_dropped
+            "threshold": round(self.seg.threshold, 4)
         }
+        
+        # Add CPU usage only if available
+        if cpu_usage is not None:
+            response["cpu_usage_percent"] = round(cpu_usage, 1)
         
         self.send_response(response)
         print("📊 Stats command processed")
@@ -308,28 +332,6 @@ class MQTTCommands:
         except Exception as e:
             self.send_response(f"ERROR: Invalid subcarrier selection: {e}")
     
-    def cmd_smart_publishing(self, cmd_obj):
-        """Enable/disable smart publishing"""
-        if 'enabled' not in cmd_obj:
-            self.send_response("ERROR: Missing 'enabled' field")
-            return
-        
-        try:
-            enabled = bool(cmd_obj['enabled'])
-            
-            old_state = self.config.SMART_PUBLISHING
-            self.config.SMART_PUBLISHING = enabled
-            
-            # Save to NVS
-            self.nvs.save_full_config(self.seg, self.config, self.traffic_gen)
-            
-            status = "enabled" if enabled else "disabled"
-            self.send_response(f"Smart publishing {status}")
-            print(f"📡 Smart publishing {status}")
-            
-        except Exception as e:
-            self.send_response(f"ERROR: Invalid enabled value: {e}")
-    
     def cmd_factory_reset(self, cmd_obj):
         """Reset all parameters to defaults and trigger NBVI re-calibration"""
         print("⚠️  Factory reset requested")
@@ -350,9 +352,6 @@ class MQTTCommands:
         
         # Reset subcarrier selection to defaults
         self.config.SELECTED_SUBCARRIERS = SELECTED_SUBCARRIERS.copy()
-        
-        # Reset smart publishing
-        self.config.SMART_PUBLISHING = False
         
         # Reset traffic generator to default rate
         if self.traffic_gen:
@@ -385,7 +384,7 @@ class MQTTCommands:
             print("🧬 Starting NBVI re-calibration...")
             
             # Run calibration
-            success = self.nbvi_calibration_func(self.wlan, self.nvs, self.seg)
+            success = self.nbvi_calibration_func(self.wlan, self.nvs, self.seg, self.traffic_gen)
             
             if success:
                 self.send_response(f"NBVI re-calibration successful! Band: {self.config.SELECTED_SUBCARRIERS}")
@@ -476,8 +475,6 @@ class MQTTCommands:
                 self.cmd_segmentation_window_size(cmd_obj)
             elif command == 'subcarrier_selection':
                 self.cmd_subcarrier_selection(cmd_obj)
-            elif command == 'smart_publishing':
-                self.cmd_smart_publishing(cmd_obj)
             elif command == 'factory_reset':
                 self.cmd_factory_reset(cmd_obj)
             elif command == 'traffic_generator_rate':
@@ -489,9 +486,3 @@ class MQTTCommands:
             error_msg = f"ERROR: Command processing failed: {e}"
             print(error_msg)
             self.send_response(error_msg)
-    
-    def update_packet_count(self, count, dropped=None):
-        """Update packets processed and dropped counters"""
-        self.packets_processed = count
-        if dropped is not None:
-            self.packets_dropped = dropped
