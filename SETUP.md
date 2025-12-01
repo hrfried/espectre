@@ -9,13 +9,12 @@ Complete guide to install and configure ESPectre with ESPHome.
 ---
 
 **Hardware:**
-- **ESP32-S3**: Dual-core, 16MB Flash, 8MB PSRAM, better CPU performance
-- **ESP32-C6**: Single-core, 4MB Flash, WiFi 6, higher CSI packet rate
+- **ESP32-S3:** or **ESP32-C6:**
 - USB-C or Micro-USB cable (depending on board)
-- Wi-Fi router (2.4 GHz, ESP32-C6 supports WiFi 6 on 2.4 GHz)
+- Wi-Fi router (2.4 GHz, 802.11b|g|n|ax)
 
 **Software:**
-- Python 3.9 or newer
+- Python 3.12 or newer
 - ESPHome 2024.x or newer
 - Home Assistant (recommended, but optional)
 
@@ -42,9 +41,9 @@ If you have Home Assistant with ESPHome add-on installed:
 
 ```bash
 # Create virtual environment (recommended)
-python3 -m venv esphome-env
-source esphome-env/bin/activate  # Linux/macOS
-# esphome-env\Scripts\activate   # Windows
+python3 -m venv venv
+source venv/bin/activate  # On macOS/Linux
+# venv\Scripts\activate   # On Windows
 
 # Install ESPHome
 pip install esphome

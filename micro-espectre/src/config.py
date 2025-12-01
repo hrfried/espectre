@@ -12,7 +12,7 @@ WIFI_PASSWORD = "YourPassword"
 # MQTT Configuration
 MQTT_BROKER = "homeassistant.local"  # Your MQTT broker IP
 MQTT_PORT = 1883
-MQTT_CLIENT_ID = "espectre-lite"
+MQTT_CLIENT_ID = "micro-espectre"
 MQTT_TOPIC = "home/espectre/node1"
 MQTT_USERNAME = "mqtt"
 MQTT_PASSWORD = "mqtt"

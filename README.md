@@ -39,8 +39,8 @@
 ## 🎯 In 3 Points
 
 1. **What it does**: Detects movement using Wi-Fi (no cameras, no microphones)
-2. **What you need**: A ~€10 device (ESP32-S3 or ESP32-C6) + Home Assistant
-3. **Setup time**: 10-15 minutes (with ESPHome)
+2. **What you need**: A ~€10 device (ESP32-S3 or ESP32-C6)
+3. **Setup time**: 10-15 minutes
 
 ---
 
@@ -65,8 +65,6 @@ The mathematical approach provides excellent movement detection without the comp
 
 - ✅ **2.4GHz Wi-Fi Router** - the one you already have at home works fine
 - ✅ **ESP32-S3 or ESP32-C6** - Available on Amazon, AliExpress, or electronics stores (~€10)
-  - **ESP32-C6** (recommended): WiFi 6 support, lower cost
-  - **ESP32-S3**: More CPU power, 8MB PSRAM
 
 ![3 x ESP32-S3 DevKit bundle with external antennas](images/home_lab.jpg)
 *ESP32-S3 DevKit with external antennas*
@@ -75,7 +73,6 @@ The mathematical approach provides excellent movement detection without the comp
 
 - ✅ **Home Assistant** (on Raspberry Pi, PC, NAS, or cloud)
 - ✅ **ESPHome** (integrated in Home Assistant or standalone)
-- ✅ **Python 3.9+** (for standalone ESPHome installation)
 
 ### Required Skills
 
@@ -381,19 +378,7 @@ CSI data represents only the properties of the transmission medium and does not 
 
 ### Hardware Requirements
 
-**ESP32-S3:**
-- **Board**: ESP32-S3
-- **Flash**: 16MB
-- **PSRAM**: 8MB
-- **Wi-Fi**: 802.11 b/g/n (2.4 GHz only)
-- **Power**: USB-C 5V or 3.3V via pins
-
-**ESP32-C6:**
-- **Board**: ESP32-C6
-- **Flash**: 4MB minimum
-- **PSRAM**: None
-- **Wi-Fi**: 802.11 b/g/n/ax (WiFi 6 tested on 2.4 GHz)
-- **Power**: USB-C 5V or 3.3V via pins
+**ESP32-S3:** or **ESP32-C6:**
 
 ### Software Requirements
 - **Framework**: ESPHome with ESP-IDF backend
@@ -418,7 +403,7 @@ CSI data represents only the properties of the transmission medium and does not 
 *Tested on 2000 packets. See [PERFORMANCE.md](PERFORMANCE.md) for detailed metrics and methodology.*
 
 ### Limitations
-- Currently tested on 2.4 GHz only (ESP32-S3: 2.4 GHz only, ESP32-C6: WiFi 6 on 2.4 GHz tested)
+- Currently tested on 2.4 GHz only
 - Sensitivity dependent on: wall materials, antenna placement, distances, interference
 - Not suitable for environments with very high Wi-Fi traffic
 - Cannot distinguish between people, pets, or objects (generic motion detection)
@@ -434,11 +419,10 @@ ESPectre supports multiple ESP32 platforms:
 
 | Platform | CPU | WiFi | Status |
 |----------|-----|------|--------|
-| **ESP32-C6** | Single-core RISC-V @ 160MHz | WiFi 6 (802.11ax) | ✅ Recommended |
-| **ESP32-S3** | Dual-core Xtensa @ 240MHz | WiFi 4 (802.11n) | ✅ Supported |
-| ESP32 (Classic) | Dual-core Xtensa @ 240MHz | WiFi 4 | ❌ Not tested |
+| **ESP32-C6** | Single-core RISC-V @ 160MHz | WiFi 6 (802.11ax) | ✅ Tested |
+| **ESP32-S3** | Dual-core Xtensa @ 240MHz | WiFi 4 (802.11n) | ✅ Tested |
 
-**Recommendation**: Use **ESP32-C6** for new projects (WiFi 6 support, sufficient performance).
+**Recommendation**: Use **ESP32-C6** for new projects (WiFi 6 support).
 
 To switch platforms, change the `variant` in your YAML and re-flash. See [SETUP.md](SETUP.md) for platform-specific configurations.
 

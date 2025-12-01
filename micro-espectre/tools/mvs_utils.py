@@ -78,9 +78,9 @@ def load_baseline_and_movement():
         tuple: (baseline_packets, movement_packets)
     """
     if not BASELINE_FILE.exists():
-        raise FileNotFoundError(f"{BASELINE_FILE} not found. Run: ./deploy.sh --collect-baseline")
+        raise FileNotFoundError(f"{BASELINE_FILE} not found. Run: ../me run --collect-baseline")
     if not MOVEMENT_FILE.exists():
-        raise FileNotFoundError(f"{MOVEMENT_FILE} not found. Run: ./deploy.sh --collect-movement")
+        raise FileNotFoundError(f"{MOVEMENT_FILE} not found. Run: ../me run --collect-movement")
     
     baseline_packets = load_binary_data(BASELINE_FILE)
     movement_packets = load_binary_data(MOVEMENT_FILE)

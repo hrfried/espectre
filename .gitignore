@@ -1,11 +1,3 @@
-# ESP-IDF (legacy)
-esp-idf/
-build/
-sdkconfig
-sdkconfig.old
-dependencies.lock
-managed_components/
-
 # PlatformIO
 test/.pio/
 test/.vscode/
@@ -21,13 +13,12 @@ __pycache__/
 *.pyo
 .cache
 
-# Test results
-test_results/
-test/test_output.log
-test/test_results/
+# Virtual environment
+venv/
+env/
+.venv/
 
 # ESPHome
-esphome-env/
 .esphome/
 secrets.yaml
 

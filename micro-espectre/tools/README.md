@@ -21,10 +21,10 @@ Before running analysis tools, collect CSI data samples:
 # From micro-espectre root directory
 
 # Collect baseline data (no movement)
-./deploy.sh /dev/cu.usbmodem* --collect-baseline
+../me run --collect-baseline
 
 # Collect movement data (with movement)
-./deploy.sh /dev/cu.usbmodem* --collect-movement
+../me run --collect-movement
 ```
 
 This creates `baseline_data.bin` and `movement_data.bin` in the `tools/` directory.
@@ -408,8 +408,8 @@ cd tools
 
 # 1. Collect data
 cd ..
-./deploy.sh /dev/cu.usbmodem* --collect-baseline
-./deploy.sh /dev/cu.usbmodem* --collect-movement
+./me run --collect-baseline
+./me run --collect-movement
 cd tools
 
 # 2. Analyze raw data

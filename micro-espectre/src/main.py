@@ -252,18 +252,6 @@ def main():
     # NBVI Auto-Calibration at boot (if enabled and needed)
     if config.NBVI_ENABLED and not saved_config:
         run_nbvi_calibration(wlan, nvs, seg, traffic_gen)
-        
-        # Restart traffic generator after calibration to clear socket buffers
-        # and prevent ENOMEM errors in main loop
-        if traffic_gen.is_running():
-            print('🔄 Restarting traffic generator after calibration...')
-            traffic_gen.stop()
-            time.sleep(0.5)
-            gc.collect()  # Free memory before restart
-            if traffic_gen.start(traffic_rate):
-                print(f'✅ Traffic generator restarted ({traffic_rate} pps)')
-            else:
-                print('⚠️  Failed to restart traffic generator')
     else:
         print('🧬 NBVI: Auto-calibration disabled or already calibrated')
     

@@ -27,7 +27,8 @@ PlatformIO è già installato nel virtualenv ESPHome:
 
 ```bash
 # Attiva virtualenv ESPHome
-source ../esphome-env/bin/activate
+source ../venv/bin/activate  # On macOS/Linux
+# ..\venv\Scripts\activate   # On Windows
 
 # Verifica PlatformIO
 pio --version
@@ -235,8 +236,9 @@ The `analyze_test_results.py` script generates:
 ## 📝 Example Workflow
 
 ```bash
-# 1. Attiva virtualenv ESPHome
-source ../esphome-env/bin/activate
+# 1. Attiva virtualenv
+source ../venv/bin/activate  # On macOS/Linux
+# ..\venv\Scripts\activate   # On Windows
 
 # 2. Build e run tests
 cd test

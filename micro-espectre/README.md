@@ -127,128 +127,200 @@ Micro-ESPectre uses MQTT for maximum flexibility - it's not tied to Home Assista
 - 2.4GHz WiFi router
 
 ### Software
-- MicroPython with esp32-microcsi module installed
+- MicroPython with esp32-csi module installed
 - MQTT broker (Home Assistant, Mosquitto, etc.)
-- Python 3.12 (for deployment scripts, CLI, and analysis tools)
+- Python 3.12+ (for deployment scripts, CLI, and analysis tools)
+
+## 🔧 CLI Tool Overview
+
+Micro-ESPectre includes a unified command-line tool called **`me`** that simplifies all device operations. This tool will be used throughout the Quick Start guide and beyond.
+
+### Main Commands
+
+The `me` CLI provides these essential commands:
+
+| Command | Description | Usage Example |
+|---------|-------------|---------------|
+| `flash` | Flash MicroPython firmware to device | `./me flash --erase` |
+| `deploy` | Deploy Python code to device | `./me deploy` |
+| `run` | Run the application | `./me run` |
+| `verify` | Verify firmware installation | `./me verify` |
+| *(interactive)* | Interactive MQTT control | `./me` |
+
+### Key Features
+
+- 🔍 **Auto-detection**: Automatically detects serial port and chip type (ESP32-S3/C6)
+- ⚡ **Fast deployment**: Updates code in ~5 seconds (no compilation)
+- 🎯 **Simple syntax**: Intuitive commands for all operations
+- 🔧 **Manual override**: Specify port/chip manually if needed
+
+**Example workflow:**
+```bash
+./me flash --erase    # Flash firmware (first time only)
+./me deploy           # Deploy code
+./me run              # Run application
+./me                  # Interactive MQTT control
+```
+
+> **Note**: The interactive mode (`./me` without arguments) provides advanced MQTT control features and is covered in detail in the [Interactive CLI (Advanced)](#-interactive-cli-advanced) section.
 
 ## 🚀 Quick Start
 
-### 0. Python Environment Setup
+Get started in just **6 simple steps** - no compilation required!
 
-Before using the deployment scripts, CLI, or analysis tools, you need to set up a Python virtual environment:
+### 0. Setup Python Environment
 
 ```bash
-# Navigate to micro-espectre directory
-cd micro-espectre
+# Clone the repository
+git clone https://github.com/francescopace/espectre.git
+cd espectre/micro-espectre
 
-# Create virtual environment
+# Create and activate virtual environment
 python3 -m venv venv
-
-# Activate virtual environment
 source venv/bin/activate  # On macOS/Linux
-# or
-venv\Scripts\activate  # On Windows
+# venv\Scripts\activate   # On Windows
 
-# Install dependencies
+# Your prompt should now show (venv) prefix
+```
+
+**Why use a virtual environment?**
+- Isolates project dependencies from system Python
+- Prevents version conflicts with other projects
+- Makes the project portable and reproducible
+
+**Note:** Remember to activate the virtual environment (`source venv/bin/activate`) every time you open a new terminal session to work with this project.
+
+### 1. Install Dependencies
+
+```bash
+# Install Python dependencies (venv should be active)
 pip install -r requirements.txt
 ```
 
-**Important**: The virtual environment must be activated whenever you want to:
-- Deploy code to ESP32 (`./deploy.sh`)
-- Use the interactive CLI (`python espectre-cli.py`)
-- Run analysis tools (`python tools/*.py`)
+This installs all required tools including `esptool` (for flashing firmware) and `mpremote` (for deploying code).
 
-**Tip**: To deactivate the virtual environment when done, simply run `deactivate`.
+### 2. Flash MicroPython Firmware
 
-### 1. Install MicroPython with CSI Support 
+**⚠️ Required for first-time setup** (only once per device)
 
-**Note:** This step is only required once to flash the patched MicroPython firmware with esp32-microcsi module to your device.
+The precompiled firmware with CSI support is included in the `firmware/` directory.
 
-Follow the instructions at [esp32-microcsi](https://github.com/francescopace/esp32-microcsi):
-
+**Auto-detect mode** (recommended - detects port and chip automatically):
 ```bash
-# Clone esp32-microcsi repository
-git clone https://github.com/francescopace/esp32-microcsi
-cd esp32-microcsi
-
-# Setup environment
-./scripts/setup_env.sh
-
-# Integrate CSI module
-./scripts/integrate_csi.sh
-
-# Build and flash (ESP32-S3)
-./scripts/build_flash.sh -b ESP32_GENERIC_S3
-
-# Or for ESP32-C6
-./scripts/build_flash.sh -b ESP32_GENERIC_C6
+./me flash --erase
 ```
 
-### 2. Configure WiFi and MQTT
+The CLI will:
+- 🔍 Auto-detect your serial port
+- 🔍 Auto-detect your chip type (ESP32-S3 or ESP32-C6)
+- 📦 Select the correct firmware
+- ⚡ Flash it to your device
 
-Create `config_local.py` from the template:
-
+**Manual mode** (if auto-detect fails):
 ```bash
-cp config_local.py.example config_local.py
+# Specify chip and/or port manually
+./me flash --chip s3 --port /dev/ttyUSB0 --erase
 ```
 
-Edit `config_local.py` with your credentials:
+**Verify the installation:**
+```bash
+./me verify
+```
 
+### 3. Configure WiFi and MQTT
+
+```bash
+# Create configuration file
+cp src/config_local.py.example src/config_local.py
+
+# Edit with your credentials
+vi src/config_local.py  # or use your preferred editor
+```
+
+Update these settings:
 ```python
-# WiFi Configuration
 WIFI_SSID = "YourWiFiSSID"
 WIFI_PASSWORD = "YourWiFiPassword"
-
-# MQTT Configuration
-MQTT_BROKER = "homeassistant.local"  # Your MQTT broker IP or hostname
-MQTT_PORT = 1883
-MQTT_USERNAME = "username"
-MQTT_PASSWORD = "password"
+MQTT_BROKER = "homeassistant.local"  # or IP address
+MQTT_USERNAME = "mqtt"
+MQTT_PASSWORD = "mqtt"
 ```
 
-**Note**: `config_local.py` overrides the defaults in `config.py`. You can also customize other settings like topic, buffer size, etc.
-
-### 3. Upload Files to ESP32
-
-Use the deployment script:
+### 4. Deploy and Run
 
 ```bash
-# Deploy only (upload files)
-./deploy.sh /dev/cu.usbmodem*
+# Deploy code (auto-detect port)
+./me deploy
 
-# Deploy and run main application
-./deploy.sh /dev/cu.usbmodem* --run
-
-# Deploy and collect baseline data (for testing/analysis)
-./deploy.sh /dev/cu.usbmodem* --collect-baseline
-
-# Deploy and collect movement data (for testing/analysis)
-./deploy.sh /dev/cu.usbmodem* --collect-movement
+# Run application (auto-detect port)
+./me run
 ```
 
-**Data Collection:**
-The `--collect-baseline` and `--collect-movement` flags are used to collect CSI data samples for algorithm testing and parameter tuning. The collected binary files are automatically downloaded to the `tools/` directory and can be analyzed with the Python analysis scripts.
+That's it! 🎉 The device will now:
+- Connect to WiFi
+- Connect to MQTT broker
+- Start publishing motion detection data
+- Automatically calibrate subcarriers (NBVI algorithm)
 
-### 4. Run
+### 5. Monitor and Control
+
+**Option A: Interactive CLI (MQTT control)**
+```bash
+./me
+```
+
+**Option B: Home Assistant**
+
+Add to your `configuration.yaml`:
+```yaml
+mqtt:
+  binary_sensor:
+    - name: "ESPectre Motion"
+      state_topic: "home/espectre/node1"
+      value_template: "{{ value_json.state }}"
+      payload_on: "motion"
+      payload_off: "idle"
+      device_class: motion
+```
+
+## 🔧 Additional Commands
+
+### Data Collection (for analysis/research)
 
 ```bash
-# Run main application
-mpremote connect /dev/cu.usbmodem* run src/main.py
+# Collect baseline CSI data (auto-detect port)
+./me run --collect-baseline
 
-# Or connect to REPL and run
-mpremote connect /dev/cu.usbmodem*
->>> from src import main
->>> main.main()
+# Collect movement CSI data (auto-detect port)
+./me run --collect-movement
+```
+
+Data files are saved to `tools/` directory for analysis with the Python scripts.
+
+### Update Code (during development)
+
+```bash
+# Deploy updated code (auto-detect port)
+./me deploy
+
+# Run application (auto-detect port)
+./me run
 ```
 
 ## 📁 Project Structure
 
 ```
 micro-espectre/
+├── firmware/                  # Precompiled MicroPython firmware
+│   ├── ESP32_GENERIC_S3.bin   # ESP32-S3 firmware with CSI support
+│   ├── ESP32_GENERIC_C6.bin   # ESP32-C6 firmware with CSI support
+│   └── README.md              # Firmware documentation
 ├── src/                       # Main package
 │   ├── __init__.py            # Package initialization
 │   ├── main.py                # Main application entry point
 │   ├── config.py              # Default configuration
+│   ├── config_local.py        # Local config override (gitignored)
+│   ├── config_local.py.example # Configuration template
 │   ├── segmentation.py        # MVS segmentation logic
 │   ├── traffic_generator.py   # WiFi traffic generator
 │   ├── nvs_storage.py         # JSON-based config persistence
@@ -260,13 +332,24 @@ micro-espectre/
 │       ├── handler.py         # MQTT connection and publishing
 │       └── commands.py        # MQTT command processing
 ├── tools/                     # Analysis and optimization tools
-│   └── ...
-├── config_local.py            # Local config override (gitignored)
-├── config_local.py.example    # Configuration template
-├── deploy.sh                  # Deployment script
+│   ├── 1_analyze_raw_data.py  # Raw CSI data visualization
+│   ├── 2_analyze_system_tuning.py  # System parameter tuning
+│   ├── 11_test_nbvi_selection.py   # NBVI algorithm testing
+│   └── ...                    # 11 analysis scripts total
+├── me                         # Unified CLI tool (flash/deploy/run/verify/MQTT)
+├── espectre-monitor.html      # Web-based monitoring dashboard
+├── espectre-theremin.html     # Audio sonification tool (experimental)
+├── requirements.txt           # Python dependencies
 ├── .gitignore                 # Git ignore rules
 └── README.md                  # This file
 ```
+
+### Key Files
+
+- **`me`**: Main CLI tool for flashing firmware, deploying code, running app, and MQTT control
+- **`firmware/`**: Precompiled MicroPython firmware with CSI support (no build required)
+- **`src/`**: Core Python implementation of motion detection algorithms
+- **`tools/`**: Analysis scripts for algorithm development and validation
 
 ## ⚙️ Configuration
 
@@ -303,12 +386,9 @@ The `tools/` directory contains a comprehensive suite of Python scripts for CSI 
 ### Quick Start
 
 ```bash
-# Collect CSI data samples
-./deploy.sh /dev/cu.usbmodem* --collect-baseline
-./deploy.sh /dev/cu.usbmodem* --collect-movement
-
-# Activate virtual environment
-source venv/bin/activate  # On macOS/Linux
+# Collect CSI data samples (auto-detect port)
+./me run --collect-baseline
+./me run --collect-movement
 
 # Run analysis
 cd tools
@@ -482,28 +562,27 @@ When 802.11bf is widely adopted, applications like this project will become:
 
 </details>
 
----
+## 🖥️ Interactive CLI (Advanced)
 
-## 🖥️ Interactive CLI
+Beyond the basic commands covered in the [CLI Tool Overview](#-cli-tool-overview), the `me` tool provides an **interactive mode** for advanced device control and monitoring via MQTT.
 
-Micro-ESPectre includes an interactive command-line interface (`espectre-cli.py`) for easy device control and monitoring via MQTT.
-
-**Prerequisites**: Make sure you have completed the [Python Environment Setup](#-quick-start) (step 0) before using the CLI.
+**Prerequisites**: Make sure you have completed the [Python Environment Setup](#0-setup-python-environment) before using the CLI.
 
 ### Usage
 
 ```bash
-# Activate virtual environment (if not already active)
-source venv/bin/activate  # On macOS/Linux
+# Make sure virtual environment is active
+# (your prompt should show (venv) prefix)
+# If not: source venv/bin/activate  # On macOS/Linux
 
-# Connect to default broker (homeassistant.local)
-python espectre-cli.py
+# Run the interactive CLI:
+./me
 
 # Connect to specific broker
-python espectre-cli.py --broker 192.168.1.100 --port 1883
+./me --broker 192.168.1.100 --port 1883
 
 # With authentication
-python espectre-cli.py --broker homeassistant.local --username mqtt --password mqtt
+./me --broker homeassistant.local --username mqtt --password mqtt
 ```
 
 ### Features
@@ -530,8 +609,6 @@ Two HTML-based tools are included for visualization:
 
 - **`espectre-monitor.html`**: Real-time motion monitoring dashboard with charts
 - **`espectre-theremin.html`**: Audio sonification of CSI data (experimental)
-
----
 
 ## 📡 MQTT Integration
 
