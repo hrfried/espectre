@@ -22,7 +22,7 @@
 #include "esp_event.h"
 
 // Include C++ modules
-#include "csi_processor.h"
+#include "csi_processor.h"  // For SEGMENTATION_MAX_WINDOW_SIZE
 #include "sensor_publisher.h"
 #include "csi_manager.h"
 #include "wifi_lifecycle.h"
@@ -42,6 +42,7 @@ class ESpectreComponent : public Component {
  public:
   void setup() override;
   void loop() override;
+  ~ESpectreComponent();
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
   
@@ -75,7 +76,6 @@ class ESpectreComponent : public Component {
   // C state (core modules)
   csi_processor_context_t csi_processor_{};
   csi_motion_state_t motion_state_{};
-  
   
   // Configuration from YAML
   float segmentation_threshold_{1.0f};

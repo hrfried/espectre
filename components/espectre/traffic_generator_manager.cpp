@@ -242,7 +242,7 @@ void TrafficGeneratorManager::traffic_task_(void* arg) {
     
     if (sent <= 0) {
       // Log occasional errors
-      ESP_LOGW(TAG, "Send error: %d (errno: %d)", sent, errno);
+      ESP_LOGW(TAG, "Send error: %zd (errno: %d)", sent, errno);
     }
     
     // Calculate next send time with fractional accumulator for precise rate

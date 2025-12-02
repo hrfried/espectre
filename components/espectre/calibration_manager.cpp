@@ -368,7 +368,7 @@ void CalibrationManager::select_with_spacing_(const std::vector<NBVIMetrics>& so
   std::memcpy(output_band, selected.data(), selected.size());
   *output_size = selected.size();
   
-  ESP_LOGD(TAG, "Selected %d subcarriers with spacing Δf≥%d",
+  ESP_LOGD(TAG, "Selected %zu subcarriers with spacing Δf≥%d",
            selected.size(), min_spacing_);
 }
 

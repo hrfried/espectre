@@ -69,13 +69,6 @@ class CSIManager {
   void set_threshold(float threshold);
   
   /**
-   * Update segmentation window size
-   * 
-   * @param window_size New window size
-   */
-  void set_window_size(uint16_t window_size);
-  
-  /**
    * Enable CSI hardware and start processing
    * 
    * @param packet_callback Callback to invoke periodically (every publish_rate packets)

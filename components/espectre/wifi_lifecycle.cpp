@@ -33,7 +33,7 @@ esp_err_t WiFiLifecycleManager::register_handlers(wifi_connected_callback_t conn
   esp_err_t err = esp_event_handler_instance_register(
       IP_EVENT,
       IP_EVENT_STA_GOT_IP,
-      &WiFiLifecycleManager::wifi_event_handler_,
+      &WiFiLifecycleManager::ip_event_handler_,
       this,
       &connected_instance_
   );
@@ -80,12 +80,15 @@ void WiFiLifecycleManager::unregister_handlers() {
   ESP_LOGI(TAG, "WiFi event handlers unregistered");
 }
 
-void WiFiLifecycleManager::wifi_event_handler_(void* arg, esp_event_base_t event_base,
-                                               int32_t event_id, void* event_data) {
+void WiFiLifecycleManager::ip_event_handler_(void* arg, esp_event_base_t event_base,
+                                             int32_t event_id, void* event_data) {
+  (void)event_base;
+  (void)event_data;
+  
   WiFiLifecycleManager* manager = static_cast<WiFiLifecycleManager*>(arg);
   
-  // WiFi connected
-  if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+  // WiFi connected (got IP address)
+  if (event_id == IP_EVENT_STA_GOT_IP) {
     ESP_LOGI(TAG, "WiFi connected");
     
     // Log current WiFi parameters for debugging
@@ -116,8 +119,15 @@ void WiFiLifecycleManager::wifi_event_handler_(void* arg, esp_event_base_t event
       manager->connected_callback_();
     }
   }
+}
+
+void WiFiLifecycleManager::wifi_event_handler_(void* arg, esp_event_base_t event_base,
+                                               int32_t event_id, void* event_data) {
+  
+  WiFiLifecycleManager* manager = static_cast<WiFiLifecycleManager*>(arg);
+  
   // WiFi disconnected
-  else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+  if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
     ESP_LOGW(TAG, "WiFi disconnected");
     if (manager->disconnected_callback_) {
       manager->disconnected_callback_();

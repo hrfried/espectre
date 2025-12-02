@@ -41,7 +41,15 @@ void ESpectreComponent::setup() {
     this->hampel_threshold_ = config.hampel_threshold;
   }
   
-  // 3. Initialize managers (each manager handles its own internal initialization)
+  // 3. Initialize CSI processor (allocates buffer internally)
+  if (!csi_processor_init(&this->csi_processor_, 
+                          this->segmentation_window_size_, 
+                          this->segmentation_threshold_)) {
+    ESP_LOGE(TAG, "Failed to initialize CSI processor");
+    return;  // Component initialization failed
+  }
+  
+  // 4. Initialize managers (each manager handles its own internal initialization)
   this->calibration_manager_.init(&this->csi_manager_);
   this->traffic_generator_.init(this->traffic_generator_rate_);
   this->csi_manager_.init(
@@ -55,13 +63,18 @@ void ESpectreComponent::setup() {
     this->hampel_threshold_
   );
   
-  // 4. Register WiFi lifecycle handlers
+  // 5. Register WiFi lifecycle handlers
   this->wifi_lifecycle_.register_handlers(
       [this]() { this->on_wifi_connected_(); },
       [this]() { this->on_wifi_disconnected_(); }
   );
   
   ESP_LOGI(TAG, "ESPectre initialized successfully");
+}
+
+ESpectreComponent::~ESpectreComponent() {
+  // Cleanup CSI processor (deallocates turbulence buffer)
+  csi_processor_cleanup(&this->csi_processor_);
 }
 
 void ESpectreComponent::on_wifi_connected_() {

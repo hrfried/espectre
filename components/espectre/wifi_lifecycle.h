@@ -58,7 +58,9 @@ class WiFiLifecycleManager {
   void unregister_handlers();
   
  private:
-  // Static handlers for ESP-IDF C API
+  // Static handlers for ESP-IDF C API (separated by event type)
+  static void ip_event_handler_(void* arg, esp_event_base_t event_base,
+                                int32_t event_id, void* event_data);
   static void wifi_event_handler_(void* arg, esp_event_base_t event_base,
                                   int32_t event_id, void* event_data);
   

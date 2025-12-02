@@ -45,7 +45,7 @@ static void process_packet(csi_processor_context_t *ctx, const int8_t *packet) {
 void test_segmentation_init(void) {
     csi_processor_context_t ctx;
 
-    csi_processor_init(&ctx);
+    TEST_ASSERT_TRUE(csi_processor_init(&ctx, SEGMENTATION_DEFAULT_WINDOW_SIZE, SEGMENTATION_DEFAULT_THRESHOLD));
 
     TEST_ASSERT_EQUAL(CSI_STATE_IDLE, ctx.state);
     TEST_ASSERT_EQUAL(0, ctx.buffer_count);
@@ -56,20 +56,25 @@ void test_segmentation_init(void) {
 // Test: Parameter setters and getters
 void test_segmentation_parameters(void) {
     csi_processor_context_t ctx;
-    csi_processor_init(&ctx);
-
-    // Test window size setter/getter
-    TEST_ASSERT_TRUE(csi_processor_set_window_size(&ctx, 10));
+    
+    // Test window size is set at init and cannot be changed
+    TEST_ASSERT_TRUE(csi_processor_init(&ctx, 10, SEGMENTATION_DEFAULT_THRESHOLD));
     TEST_ASSERT_EQUAL(10, csi_processor_get_window_size(&ctx));
-
-    TEST_ASSERT_TRUE(csi_processor_set_window_size(&ctx, 100));
-    TEST_ASSERT_EQUAL(100, csi_processor_get_window_size(&ctx));
-
-    // Test invalid window size (too small)
-    TEST_ASSERT_FALSE(csi_processor_set_window_size(&ctx, 0));
-    TEST_ASSERT_EQUAL(100, csi_processor_get_window_size(&ctx));  // Should remain unchanged
+    csi_processor_cleanup(&ctx);
+    
+    TEST_ASSERT_TRUE(csi_processor_init(&ctx, 200, SEGMENTATION_DEFAULT_THRESHOLD));
+    TEST_ASSERT_EQUAL(200, csi_processor_get_window_size(&ctx));
+    csi_processor_cleanup(&ctx);
+    
+    // Test invalid window size (too small) - init should fail
+    TEST_ASSERT_FALSE(csi_processor_init(&ctx, 0, SEGMENTATION_DEFAULT_THRESHOLD));
+    
+    // Test invalid window size (too large) - init should fail
+    TEST_ASSERT_FALSE(csi_processor_init(&ctx, 201, SEGMENTATION_DEFAULT_THRESHOLD));
 
     // Test threshold setter/getter
+    TEST_ASSERT_TRUE(csi_processor_init(&ctx, SEGMENTATION_DEFAULT_WINDOW_SIZE, SEGMENTATION_DEFAULT_THRESHOLD));
+    
     TEST_ASSERT_TRUE(csi_processor_set_threshold(&ctx, 0.5f));
     TEST_ASSERT_EQUAL_FLOAT(0.5f, csi_processor_get_threshold(&ctx));
 
@@ -79,6 +84,8 @@ void test_segmentation_parameters(void) {
     // Test invalid threshold (negative)
     TEST_ASSERT_FALSE(csi_processor_set_threshold(&ctx, -1.0f));
     TEST_ASSERT_EQUAL_FLOAT(2.0f, csi_processor_get_threshold(&ctx));  // Should remain unchanged
+    
+    csi_processor_cleanup(&ctx);
 }
 
 // Test: Reset functionality preserves parameters
@@ -86,11 +93,10 @@ void test_segmentation_reset(void) {
     csi_set_subcarrier_selection(SELECTED_SUBCARRIERS, NUM_SUBCARRIERS);
 
     csi_processor_context_t ctx;
-    csi_processor_init(&ctx);
+    TEST_ASSERT_TRUE(csi_processor_init(&ctx, 30, SEGMENTATION_DEFAULT_THRESHOLD));
 
-    // Configure custom parameters
+    // Configure custom threshold
     csi_processor_set_threshold(&ctx, 1.5f);
-    csi_processor_set_window_size(&ctx, 30);
 
     // Process some packets to change state
     for (int i = 0; i < 50 && i < num_movement; i++) {
@@ -116,7 +122,7 @@ void test_segmentation_reset(void) {
 // Test: Handles invalid input gracefully
 void test_segmentation_handles_invalid_input(void) {
     csi_processor_context_t ctx;
-    csi_processor_init(&ctx);
+    TEST_ASSERT_TRUE(csi_processor_init(&ctx, SEGMENTATION_DEFAULT_WINDOW_SIZE, SEGMENTATION_DEFAULT_THRESHOLD));
 
     // Test with NULL data - should handle gracefully without crash
     csi_process_packet(&ctx, NULL, 128, SELECTED_SUBCARRIERS, NUM_SUBCARRIERS);
@@ -141,7 +147,7 @@ void test_segmentation_stress_test(void) {
     ESP_LOGI(TAG, "Heap before stress test: %zu bytes", heap_before);
 
     csi_processor_context_t ctx;
-    csi_processor_init(&ctx);
+    TEST_ASSERT_TRUE(csi_processor_init(&ctx, SEGMENTATION_DEFAULT_WINDOW_SIZE, SEGMENTATION_DEFAULT_THRESHOLD));
 
     // Process all available packets multiple times
     int total_packets = 0;

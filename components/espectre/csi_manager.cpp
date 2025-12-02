@@ -27,12 +27,7 @@ void CSIManager::init(csi_processor_context_t* processor,
   selected_subcarriers_ = selected_subcarriers;
   publish_rate_ = publish_rate;
   
-  // Initialize CSI processor
-  csi_processor_init(processor_);
-  
-  // Configure CSI processor
-  csi_processor_set_threshold(processor_, segmentation_threshold);
-  csi_processor_set_window_size(processor_, segmentation_window_size);
+  // Set subcarrier selection
   csi_set_subcarrier_selection(selected_subcarriers_, NUM_SUBCARRIERS);
   
   // Configure Hampel filter
@@ -51,11 +46,6 @@ void CSIManager::update_subcarrier_selection(const uint8_t subcarriers[12]) {
 void CSIManager::set_threshold(float threshold) {
   csi_processor_set_threshold(processor_, threshold);
   ESP_LOGD(TAG, "Threshold updated: %.2f", threshold);
-}
-
-void CSIManager::set_window_size(uint16_t window_size) {
-  csi_processor_set_window_size(processor_, window_size);
-  ESP_LOGD(TAG, "Window size updated: %d", window_size);
 }
 
 void CSIManager::process_packet(wifi_csi_info_t* data,

@@ -32,6 +32,8 @@ namespace espectre {
 
 // Segmentation constants
 constexpr uint16_t SEGMENTATION_DEFAULT_WINDOW_SIZE = 50;
+constexpr uint16_t SEGMENTATION_MIN_WINDOW_SIZE = 10;  // Minimum buffer size
+constexpr uint16_t SEGMENTATION_MAX_WINDOW_SIZE = 200;  // Maximum buffer size
 constexpr float SEGMENTATION_DEFAULT_THRESHOLD = 1.0f;
 
 // Hampel filter constants
@@ -67,9 +69,9 @@ enum csi_motion_state_t {
 
 // Unified CSI processor context (combines feature extraction + motion detection)
 struct csi_processor_context_t {
-    // Turbulence circular buffer (allocated at max size to support runtime window_size changes)
-    // Only the first window_size elements are used (window_size can be 10-200)
-    float turbulence_buffer[SEGMENTATION_DEFAULT_WINDOW_SIZE];
+    // Turbulence circular buffer (pointer to buffer allocated by owner)
+    // Buffer size must be at least window_size elements
+    float *turbulence_buffer;
     uint16_t buffer_index;
     uint16_t buffer_count;
     
@@ -96,11 +98,17 @@ struct csi_processor_context_t {
 // ============================================================================
 
 /**
- * Initialize CSI processor context with default parameters
+ * Initialize CSI processor context
+ * 
+ * Allocates and initializes the turbulence buffer internally.
  * 
  * @param ctx CSI processor context to initialize
+ * @param window_size Moving variance window size (10-200 packets)
+ * @param threshold Motion detection threshold (0.5-10.0)
+ * @return true on success, false on allocation failure
  */
-void csi_processor_init(csi_processor_context_t *ctx);
+bool csi_processor_init(csi_processor_context_t *ctx, 
+                        uint16_t window_size, float threshold);
 
 /**
  * Process a CSI packet: calculate turbulence, update motion detection
@@ -134,18 +142,19 @@ void csi_process_packet(csi_processor_context_t *ctx,
  */
 void csi_processor_reset(csi_processor_context_t *ctx);
 
+/**
+ * Cleanup CSI processor context (deallocate buffer)
+ * 
+ * Deallocates the turbulence buffer allocated by csi_processor_init().
+ * Call this when the context is no longer needed.
+ * 
+ * @param ctx CSI processor context
+ */
+void csi_processor_cleanup(csi_processor_context_t *ctx);
+
 // ============================================================================
 // PARAMETER SETTERS
 // ============================================================================
-
-/**
- * Set window size for moving variance
- * 
- * @param ctx CSI processor context
- * @param window_size New window size (10 - 200 packets)
- * @return true if value is valid and was set
- */
-bool csi_processor_set_window_size(csi_processor_context_t *ctx, uint16_t window_size);
 
 /**
  * Set motion detection threshold

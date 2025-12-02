@@ -10,10 +10,10 @@ The test suite has been converted from ESP-IDF to PlatformIO for:
 - ✅ Single command to run tests (`pio test`)
 - ✅ Better integration with VSCode and CI/CD
 
-**Total Tests**: 25
+**Total Tests**: 24
 - **Performance Tests (CORE)**: 2
 - **Feature Extraction & Tuning**: 3 (real data only)
-- **Segmentation**: 6
+- **Segmentation**: 5
 - **Filters**: 5
 - **Wavelet**: 9
 
@@ -41,26 +41,31 @@ Tests can be executed in two modes:
 1. **Local (Native)** - Tests run on your computer using mocked ESP-IDF libraries for fast iteration
 2. **On Device** - Tests run on actual ESP32 hardware for real-world validation
 
-**Note**: Some ESP-IDF libraries (e.g., `esp_wifi`, `nvs_flash`) have been mocked to enable local testing without hardware.
+**Note**: ESP-IDF functions (e.g., `ESP_LOGI`, `esp_get_free_heap_size`) have been mocked in `lib/esp_mocks/` to enable local testing without hardware. See [ESP-IDF Mocks](#-espidf-mocks) section for details.
 
 ```bash
 cd test
 
 # Run all tests LOCALLY (native, no hardware needed)
-pio test
+pio test -e native
 
-# Run tests ON DEVICE (requires ESP32 connected)
-pio test --without-uploading  # Upload and run on device
+# Run tests ON DEVICE (requires ESP32 connected via USB)
+pio test -e esp32dev
+
+# Run specific tests locally
+pio test -e native -f test_segmentation
 
 # Run specific tests on device
-pio test -f test_filters --without-uploading
-pio test -f test_performance --without-uploading
+pio test -e esp32dev -f test_segmentation
 
 # With verbose output
-pio test -v --without-uploading
+pio test -e native -v
 
-# On specific port
-pio test --upload-port /dev/ttyUSB0 --without-uploading
+# On specific USB port (for device testing)
+pio test -e esp32dev --upload-port /dev/ttyUSB0
+
+# List available tests without running them
+pio test -e native --list-tests
 ```
 
 ---
@@ -84,7 +89,10 @@ test/
 │   └── test_performance/
 │       └── test_performance.cpp
 ├── lib/
-│   └── espectre/              # Symlink to components/espectre
+│   └── esp_mocks/             # ESP-IDF mocks for native testing
+│       ├── esp_err.h
+│       ├── ...
+│       └── sdkconfig.h
 └── data/                       # Real CSI data
     ├── real_csi_arrays.inc
     └── real_csi_data_esp32.h
@@ -114,15 +122,14 @@ Primary tests for validating Home Assistant integration:
 - `segmentation_threshold_tuning_with_real_csi` - Segmentation threshold tuning
 - `pca_subcarrier_analysis_on_real_data` - PCA subcarrier optimization
 
-### 📈 Segmentation - 6 tests
+### 📈 Segmentation - 5 tests
 
 Temporal event segmentation for activity recognition:
-- `segmentation_init`
-- `spatial_turbulence_calculation`
-- `segmentation_parameters`
-- `segmentation_no_false_positives`
-- `segmentation_movement_detection`
-- `segmentation_reset`
+- `test_segmentation_init` - Initialization and default values
+- `test_segmentation_parameters` - Parameter setters/getters and validation
+- `test_segmentation_reset` - Reset functionality and state preservation
+- `test_segmentation_handles_invalid_input` - Input validation and error handling
+- `test_segmentation_stress_test` - Stress testing with large datasets
 
 ### 🔧 Filters - 5 tests
 
@@ -148,6 +155,38 @@ Wavelet denoising and signal processing tests:
 
 ---
 
+## 🔧 ESP-IDF Mocks
+
+The test suite includes comprehensive mocks for ESP-IDF APIs to enable native (local) testing without hardware. These mocks are located in `lib/esp_mocks/`:
+
+### Core ESP-IDF Mocks
+- **`esp_err.h`** - Error codes and return types
+- **`esp_log.h`** - Logging macros (`ESP_LOGI`, `ESP_LOGE`, etc.)
+- **`esp_system.h`** - System functions (`esp_get_free_heap_size`, etc.)
+- **`esp_timer.h`** - Timer functions (`esp_timer_get_time`, etc.)
+
+### WiFi & Network Mocks
+- **`esp_wifi.h`** - WiFi API (`esp_wifi_set_mode`, `esp_wifi_get_ps`, `esp_wifi_get_bandwidth`, CSI configuration)
+- **`esp_event.h`** - Event loop and event handling
+- **`esp_netif.h`** - Network interface management
+- **`lwip/sockets.h`** - Socket API (uses system sockets on native)
+- **`lwip/inet.h`** - Network address conversion macros
+
+### FreeRTOS Mocks
+- **`freertos/FreeRTOS.h`** - FreeRTOS types and constants
+- **`freertos/task.h`** - Task management (`xTaskCreate`, `vTaskDelete`, `eTaskGetState`, etc.)
+
+### Configuration
+- **`sdkconfig.h`** - SDK configuration defines
+
+All mocks are designed to:
+- ✅ Return safe default values for testing
+- ✅ Avoid actual hardware/system calls
+- ✅ Support both C and C++ code
+- ✅ Match ESP-IDF API signatures
+
+---
+
 ## 🔧 PlatformIO Configuration
 
 The `platformio.ini` file configures:
@@ -155,8 +194,11 @@ The `platformio.ini` file configures:
 - **Platform**: ESP32 (espressif32)
 - **Framework**: ESP-IDF
 - **Test Framework**: Unity
-- **Build Flags**: Include paths, Unity double precision
+- **Library Directories**: `lib_extra_dirs = ../components` - Includes ESPectre component source files
+- **Build Flags**: Include paths (`-I ../components/espectre`), Unity double precision
 - **Monitor**: 115200 baud, exception decoder, colorize
+
+**Note**: The ESPectre component source files are included directly from `../components/espectre` using `lib_extra_dirs` and include paths. No symlink is required.
 
 ---
 
@@ -181,6 +223,24 @@ Rank  Feature                   Recall    FN Rate   FP Rate   F1-Score
 ---
 
 ## 🔍 Troubleshooting
+
+### Build Errors
+
+**Common Issues:**
+1. **Missing mock files**: Ensure all ESP-IDF mocks are present in `lib/esp_mocks/`
+2. **Include path errors**: Check that `platformio.ini` includes `-I lib/esp_mocks` for native environment
+3. **Function signature mismatches**: Update mocks if ESP-IDF API changes
+
+**Solutions:**
+- Run `pio test -e native -vvv` for verbose build output
+- Verify all required mock headers exist
+- Check that mock function signatures match ESP-IDF APIs
+
+### Test Failures
+
+**Segmentation Tests:**
+- `test_segmentation_parameters` fails: Check that `csi_processor_init()` validates window_size (10-200 range)
+- Window size validation: Ensure invalid values (0, <10, >200) cause init to return `false`
 
 ### Low Recall (<90%)
 

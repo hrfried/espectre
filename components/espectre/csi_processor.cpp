@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <new>  // For std::nothrow
 #include "esp_log.h"
 
 namespace esphome {
@@ -133,28 +134,52 @@ float hampel_filter_turbulence(hampel_turbulence_state_t *state, float turbulenc
 // CONTEXT MANAGEMENT
 // ============================================================================
 
-void csi_processor_init(csi_processor_context_t *ctx) {
+bool csi_processor_init(csi_processor_context_t *ctx, 
+                        uint16_t window_size, float threshold) {
     if (!ctx) {
         ESP_LOGE(TAG, "csi_processor_init: NULL context");
-        return;
+        return false;
+    }
+    
+    // Validate window size
+    if (window_size < SEGMENTATION_MIN_WINDOW_SIZE || window_size > SEGMENTATION_MAX_WINDOW_SIZE) {
+        ESP_LOGE(TAG, "csi_processor_init: Invalid window size: %d (must be %d-%d)", 
+                 window_size, SEGMENTATION_MIN_WINDOW_SIZE, SEGMENTATION_MAX_WINDOW_SIZE);
+        return false;
+    }
+    
+    // Validate threshold
+    if (std::isnan(threshold) || std::isinf(threshold) || threshold < 0.5f || threshold > 10.0f) {
+        ESP_LOGE(TAG, "csi_processor_init: Invalid threshold: %.2f (must be 0.5-10.0)", threshold);
+        return false;
     }
     
     // Use C++ aggregate initialization
     *ctx = {};
     
-  // Initialize with defaults
-  ctx->window_size = SEGMENTATION_DEFAULT_WINDOW_SIZE;
-  ctx->threshold = SEGMENTATION_DEFAULT_THRESHOLD;
-  ctx->state = CSI_STATE_IDLE;
-  
-  // Initialize Hampel filter with defaults (will be reconfigured by csi_manager)
-  hampel_turbulence_init(&ctx->hampel_state, 
+    // Allocate turbulence buffer
+    ctx->turbulence_buffer = new (std::nothrow) float[window_size];
+    if (!ctx->turbulence_buffer) {
+        ESP_LOGE(TAG, "csi_processor_init: Failed to allocate turbulence buffer (%d elements, %zu bytes)",
+                 window_size, window_size * sizeof(float));
+        return false;
+    }
+    
+    // Set parameters
+    ctx->window_size = window_size;
+    ctx->threshold = threshold;
+    ctx->state = CSI_STATE_IDLE;
+    
+    // Initialize Hampel filter with defaults (will be reconfigured by csi_manager)
+    hampel_turbulence_init(&ctx->hampel_state, 
                         HAMPEL_TURBULENCE_WINDOW_DEFAULT,
                         HAMPEL_TURBULENCE_THRESHOLD_DEFAULT, 
                         true);
     
-    ESP_LOGI(TAG, "CSI processor initialized (window=%d, threshold=%.2f)",
-             ctx->window_size, ctx->threshold);
+    ESP_LOGI(TAG, "CSI processor initialized (window=%d, threshold=%.2f, buffer=%zu bytes)",
+             ctx->window_size, ctx->threshold, window_size * sizeof(float));
+    
+    return true;
 }
 
 void csi_processor_reset(csi_processor_context_t *ctx) {
@@ -168,26 +193,22 @@ void csi_processor_reset(csi_processor_context_t *ctx) {
     ESP_LOGD(TAG, "CSI processor reset (buffer and parameters preserved)");
 }
 
+void csi_processor_cleanup(csi_processor_context_t *ctx) {
+    if (!ctx) return;
+    
+    // Deallocate turbulence buffer
+    if (ctx->turbulence_buffer) {
+        delete[] ctx->turbulence_buffer;
+        ctx->turbulence_buffer = nullptr;
+    }
+    
+    // Reset context to safe state
+    *ctx = {};
+}
+
 // ============================================================================
 // PARAMETER SETTERS
 // ============================================================================
-
-bool csi_processor_set_window_size(csi_processor_context_t *ctx, uint16_t window_size) {
-    if (!ctx) return false;
-    
-    // If changing window size, reset buffer
-    if (window_size != ctx->window_size) {
-        ESP_LOGI(TAG, "Window size changed from %d to %d - resetting buffer", 
-                 ctx->window_size, window_size);
-        ctx->buffer_index = 0;
-        ctx->buffer_count = 0;
-        ctx->current_moving_variance = 0.0f;
-    }
-    
-    ctx->window_size = window_size;
-    ESP_LOGI(TAG, "Window size updated: %d", window_size);
-    return true;
-}
 
 bool csi_processor_set_threshold(csi_processor_context_t *ctx, float threshold) {
     if (!ctx) {
