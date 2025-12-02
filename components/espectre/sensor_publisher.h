@@ -27,7 +27,6 @@ class SensorPublisher {
  public:
   // Motion sensors
   void set_movement_sensor(sensor::Sensor *sensor) { movement_sensor_ = sensor; }
-  void set_threshold_sensor(sensor::Sensor *sensor) { threshold_sensor_ = sensor; }
   void set_motion_binary_sensor(binary_sensor::BinarySensor *sensor) { motion_binary_sensor_ = sensor; }
   
   /**
@@ -56,13 +55,11 @@ class SensorPublisher {
    * Check if sensors are configured
    */
   bool has_movement_sensor() const { return movement_sensor_ != nullptr; }
-  bool has_threshold_sensor() const { return threshold_sensor_ != nullptr; }
   bool has_motion_binary_sensor() const { return motion_binary_sensor_ != nullptr; }
   
  private:
   // Motion sensors
   sensor::Sensor *movement_sensor_{nullptr};
-  sensor::Sensor *threshold_sensor_{nullptr};
   binary_sensor::BinarySensor *motion_binary_sensor_{nullptr};
   
   // Rate tracking

@@ -98,7 +98,7 @@ esp32:
   variant: ESP32C6  # or ESP32S3
   framework:
     type: esp-idf
-    version: 5.4.2
+    version: 5.5.1
     sdkconfig_options:
       CONFIG_ESP_WIFI_CSI_ENABLED: y
       CONFIG_PM_ENABLE: n
@@ -106,15 +106,9 @@ esp32:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  power_save_mode: NONE
-
-api:  # Home Assistant integration
 
 ota:
   - platform: esphome
-
-logger:
-  level: INFO
 
 external_components:
   - source: github://francescopace/espectre
@@ -122,20 +116,6 @@ external_components:
 
 espectre:
   traffic_generator_rate: 100
-  segmentation_threshold: 1.0
-
-binary_sensor:
-  - platform: espectre
-    motion:
-      name: "Motion Detected"
-      device_class: motion
-
-sensor:
-  - platform: espectre
-    movement:
-      name: "Movement Score"
-    threshold:
-      name: "Detection Threshold"
 ```
 
 ### Full Configuration (All Options)
@@ -148,7 +128,7 @@ esp32:
   variant: ESP32C6
   framework:
     type: esp-idf
-    version: 5.4.2
+    version: 5.5.1
     sdkconfig_options:
       # Required for CSI
       CONFIG_ESP_WIFI_CSI_ENABLED: y
@@ -168,21 +148,12 @@ esp32:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  power_save_mode: NONE
-
-api:  # Home Assistant integration
-
-web_server:
-  port: 80  # Optional: HTTP endpoint for debugging
 
 ota:
   - platform: esphome
 
 logger:
   level: INFO
-  logs:
-    sensor: WARN         # Reduce sensor state logging
-    binary_sensor: WARN  # Reduce binary sensor state logging
 
 external_components:
   - source: github://francescopace/espectre
@@ -199,53 +170,36 @@ espectre:
   # Subcarrier selection (omit for auto-calibration)
   # selected_subcarriers: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
   
-  # Feature extraction (optional)
-  features_enabled: false       # Enable for ML analysis
+  # Hampel filter for turbulence outlier removal
+  hampel_enabled: true          # Enable Hampel filter (recommended)
+  hampel_window: 7              # Window size (3-11 packets)
+  hampel_threshold: 4.0         # MAD multiplier (1.0-10.0)
   
-  # Features processing filters (only if features_enabled: true)
-  butterworth_enabled: false    # Low-pass filter (removes noise >8Hz)
-  savgol_enabled: false         # Savitzky-Golay polynomial smoothing
-  hampel_enabled: false         # Outlier removal using MAD
-  hampel_threshold: 2.0         # MAD multiplier (1.0-10.0)
-  wavelet_enabled: false        # Wavelet transform denoising
-  wavelet_level: 3              # Wavelet decomposition depth (1-3)
-  wavelet_threshold: 1.0        # Wavelet noise threshold (0.5-2.0)
+  # Optional: customize sensor names (sensors are created automatically)
+  # movement_sensor:
+  #   name: "Custom Movement Name"
+  # motion_sensor:
+  #   name: "Custom Motion Name"
+  # threshold_number:
+  #   name: "Custom Threshold Name"
+```
 
-binary_sensor:
-  - platform: espectre
-    motion:
-      name: "Motion Detected"
-      device_class: motion
+### Customizing Sensor Names
 
-sensor:
-  - platform: espectre
-    # Core sensors
-    movement:
-      name: "Movement Score"
-    threshold:
-      name: "Detection Threshold"
-    
-    # Feature sensors (only if features_enabled: true)
-    # variance:
-    #   name: "CSI Variance"
-    # skewness:
-    #   name: "CSI Skewness"
-    # kurtosis:
-    #   name: "CSI Kurtosis"
-    # entropy:
-    #   name: "CSI Entropy"
-    # iqr:
-    #   name: "CSI IQR"
-    # spatial_variance:
-    #   name: "Spatial Variance"
-    # spatial_correlation:
-    #   name: "Spatial Correlation"
-    # spatial_gradient:
-    #   name: "Spatial Gradient"
-    # temporal_delta_mean:
-    #   name: "Temporal Delta Mean"
-    # temporal_delta_variance:
-    #   name: "Temporal Delta Variance"
+Sensors are created automatically with default names. To customize:
+
+```yaml
+espectre:
+  traffic_generator_rate: 100
+  segmentation_threshold: 1.0
+  
+  # Customize sensor names
+  movement_sensor:
+    name: "Living Room Movement"
+  motion_sensor:
+    name: "Living Room Motion"
+  threshold_number:
+    name: "Living Room Threshold"
 ```
 
 ---
@@ -262,38 +216,19 @@ sensor:
 | `segmentation_threshold` | float | 1.0 | 0.5-10.0 | Motion sensitivity (lower=more sensitive) |
 | `segmentation_window_size` | int | 50 | 10-200 | Moving variance window in packets |
 | `selected_subcarriers` | list | auto | 0-63 | Fixed subcarriers (omit for auto-calibration) |
-| `features_enabled` | bool | false | - | Enable statistical feature extraction |
-| `butterworth_enabled` | bool | false | - | Enable Butterworth low-pass filter |
-| `savgol_enabled` | bool | false | - | Enable Savitzky-Golay smoothing |
-| `hampel_enabled` | bool | false | - | Enable Hampel outlier filter |
-| `hampel_threshold` | float | 2.0 | 1.0-10.0 | Hampel filter sensitivity |
-| `wavelet_enabled` | bool | false | - | Enable wavelet denoising |
-| `wavelet_level` | int | 3 | 1-3 | Wavelet decomposition depth |
-| `wavelet_threshold` | float | 1.0 | 0.5-2.0 | Wavelet noise threshold |
+| `hampel_enabled` | bool | true | - | Enable Hampel outlier filter |
+| `hampel_window` | int | 7 | 3-11 | Hampel filter window size |
+| `hampel_threshold` | float | 4.0 | 1.0-10.0 | Hampel filter sensitivity (MAD multiplier) |
 
-### Binary Sensor
+### Integrated Sensors (Created Automatically)
 
-| Sensor | Description |
-|--------|-------------|
-| `motion` | Motion detected (on/off) |
+All sensors are created automatically when the `espectre` component is configured. You can optionally customize their names.
 
-### Numeric Sensors
-
-| Sensor | Description |
-|--------|-------------|
-| `movement` | Current motion intensity value |
-| `threshold` | Active detection threshold |
-| `turbulence` | Signal turbulence (optional) |
-| `variance` | CSI variance (requires features_enabled) |
-| `skewness` | CSI skewness (requires features_enabled) |
-| `kurtosis` | CSI kurtosis (requires features_enabled) |
-| `entropy` | CSI entropy (requires features_enabled) |
-| `iqr` | CSI interquartile range (requires features_enabled) |
-| `spatial_variance` | Spatial variance (requires features_enabled) |
-| `spatial_correlation` | Spatial correlation (requires features_enabled) |
-| `spatial_gradient` | Spatial gradient (requires features_enabled) |
-| `temporal_delta_mean` | Temporal delta mean (requires features_enabled) |
-| `temporal_delta_variance` | Temporal delta variance (requires features_enabled) |
+| Sensor Config | Type | Default Name | Description |
+|---------------|------|--------------|-------------|
+| `movement_sensor` | sensor | "Movement Score" | Current motion intensity value |
+| `motion_sensor` | binary_sensor | "Motion Detected" | Motion state (on/off) |
+| `threshold_number` | number | "Threshold" | Detection threshold (adjustable from HA) |
 
 ---
 
@@ -314,7 +249,7 @@ After integration, you'll have:
 
 - **binary_sensor.espectre_motion_detected** - Motion state (on/off)
 - **sensor.espectre_movement_score** - Movement intensity value
-- **sensor.espectre_detection_threshold** - Current threshold
+- **number.espectre_threshold** - Detection threshold (adjustable from Home Assistant)
 
 ### Automation Examples
 
@@ -366,6 +301,71 @@ automation:
           message: "No movement detected for 4 hours"
 ```
 
+### Dashboard Example
+
+Create a dedicated dashboard for ESPectre monitoring. Go to **Settings** → **Dashboards** → **Add Dashboard**, then edit and paste this YAML:
+
+```yaml
+title: 🛜 ESPectre 👻
+type: sections
+sections:
+  - type: grid
+    cards:
+      - type: gauge
+        entity: sensor.espectre_movement_score
+        name: Movement Level
+        min: 0
+        max: 10
+        needle: true
+        segments:
+          - from: 0
+            color: green
+          - from: 0.5
+            color: yellow
+          - from: 1
+            color: orange
+          - from: 2
+            color: red
+      - type: tile
+        grid_options:
+          columns: 12
+          rows: 1
+        entity: binary_sensor.espectre_motion_detected
+        name: Motion
+        show_entity_picture: false
+        hide_state: false
+        state_content:
+          - state
+          - last_changed
+        vertical: false
+        features_position: bottom
+      - type: entities
+        entities:
+          - entity: number.espectre_threshold
+            icon: mdi:tune-vertical
+            name: Threshold
+        show_header_toggle: false
+        state_color: false
+  - type: grid
+    cards:
+      - type: history-graph
+        title: Motion History
+        hours_to_show: 24
+        entities:
+          - entity: sensor.espectre_movement_score
+            name: Movement
+          - entity: number.espectre_threshold
+            name: Threshold
+        grid_options:
+          columns: 12
+          rows: 5
+```
+
+This dashboard includes:
+- **Gauge**: Visual representation of movement score with color-coded severity
+- **Entity cards**: Current motion state and adjustable threshold
+- **History graph**: 24-hour view of movement and motion detection
+
 ---
 
 ## Traffic Generator
@@ -401,6 +401,8 @@ espectre:
 ## NBVI Auto-Calibration
 
 ---
+
+> ⚠️ **CRITICAL**: The room must be **still** during the first 10 seconds after boot. Movement during calibration will result in poor detection accuracy!
 
 ESPectre uses the **NBVI (Normalized Baseline Variability Index)** algorithm for automatic subcarrier selection.
 
@@ -441,14 +443,14 @@ To trigger recalibration, you need to clear the saved preferences. This can be d
 
 ESPectre supports both ESP32-S3 and ESP32-C6. Choose the configuration that matches your hardware.
 
-### ESP32-C6 (Recommended)
+### ESP32-C6
 
 ```yaml
 esp32:
   variant: ESP32C6
   framework:
     type: esp-idf
-    version: 5.4.2
+    version: 5.5.1
     sdkconfig_options:
       CONFIG_ESP_WIFI_CSI_ENABLED: y
       CONFIG_PM_ENABLE: n
@@ -471,7 +473,7 @@ esp32:
   variant: ESP32S3
   framework:
     type: esp-idf
-    version: 5.4.2
+    version: 5.5.1
     sdkconfig_options:
       CONFIG_ESP_WIFI_CSI_ENABLED: y
       CONFIG_PM_ENABLE: n
@@ -534,6 +536,15 @@ The ESPectre component automatically adapts to the target platform.
 2. Check traffic generator is running
 3. Verify WiFi connection is stable
 4. Check logs for error messages
+
+### Poor detection accuracy
+
+1. **Re-calibrate with quiet room**: 
+   - Reboot the device
+   - Keep the room **completely still** for 10 seconds
+   - Don't walk, wave, or move near the sensor during calibration
+2. Check logs for `NBVI calibration complete` message
+3. If calibration fails, try erasing flash and re-flashing
 
 ### Flash failed
 

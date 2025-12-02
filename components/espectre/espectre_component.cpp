@@ -9,6 +9,7 @@
  */
 
 #include "espectre_component.h"
+#include "threshold_number.h"
 #include "utils.h"
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
@@ -69,7 +70,7 @@ void ESpectreComponent::setup() {
       [this]() { this->on_wifi_disconnected_(); }
   );
   
-  ESP_LOGI(TAG, "ESPectre initialized successfully");
+  ESP_LOGI(TAG, "🛜 ESPectre 👻 - initialized successfully");
 }
 
 ESpectreComponent::~ESpectreComponent() {
@@ -97,7 +98,7 @@ void ESpectreComponent::on_wifi_connected_() {
   }
   
   // Start traffic generator
-  ESP_LOGI(TAG, "Attempting to start traffic generator (rate: %u pps)...", this->traffic_generator_rate_);
+  ESP_LOGD(TAG, "Startingtart traffic generator (rate: %u pps)...", this->traffic_generator_rate_);
   if (!this->traffic_generator_.is_running()) {
     if (!this->traffic_generator_.start()) {
       ESP_LOGW(TAG, "Failed to start traffic generator");
@@ -145,42 +146,71 @@ void ESpectreComponent::loop() {
   // Event-driven component: all processing handled by managers via callbacks
 }
 
+void ESpectreComponent::set_threshold_runtime(float threshold) {
+  // Update internal state
+  this->segmentation_threshold_ = threshold;
+  
+  // Update CSI processor
+  csi_processor_set_threshold(&this->csi_processor_, threshold);
+  
+  // Update CSI manager
+  this->csi_manager_.set_threshold(threshold);
+  
+  // Save to preferences
+  ESpectreConfig config;
+  config.segmentation_threshold = threshold;
+  config.segmentation_window_size = this->segmentation_window_size_;
+  config.traffic_generator_rate = this->traffic_generator_rate_;
+  config.hampel_enabled = this->hampel_enabled_;
+  config.hampel_window = this->hampel_window_;
+  config.hampel_threshold = this->hampel_threshold_;
+  this->config_manager_.save(config);
+  
+  ESP_LOGI(TAG, "Threshold updated to %.2f (saved to flash)", threshold);
+}
+
 void ESpectreComponent::dump_config() {
-  ESP_LOGCONFIG(TAG, "ESPectre:");
-  
-  // Motion Detection Configuration
-  ESP_LOGCONFIG(TAG, "  Motion Detection:");
-  ESP_LOGCONFIG(TAG, "    Threshold: %.2f", this->segmentation_threshold_);
-  ESP_LOGCONFIG(TAG, "    Window Size: %d packets", this->segmentation_window_size_);
-  
-  // Subcarrier Selection
-  ESP_LOGCONFIG(TAG, "  Subcarriers: [%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d]",
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "  _____ ____  ____           __            ");
+  ESP_LOGCONFIG(TAG, " | ____/ ___||  _ \\ ___  ___| |_ _ __ ___ ");
+  ESP_LOGCONFIG(TAG, " |  _| \\___ \\| |_) / _ \\/ __| __| '__/ _ \\");
+  ESP_LOGCONFIG(TAG, " | |___ ___) |  __/  __/ (__| |_| | |  __/");
+  ESP_LOGCONFIG(TAG, " |_____|____/|_|   \\___|\\___|\\__|_|  \\___|");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "      Wi-Fi CSI Motion Detection System");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, " MOTION DETECTION");
+  ESP_LOGCONFIG(TAG, " ├─ Threshold .......... %.2f", this->segmentation_threshold_);
+  ESP_LOGCONFIG(TAG, " └─ Window ............. %d pkts", this->segmentation_window_size_);
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, " SUBCARRIERS [%02d,%02d,%02d,%02d,%02d,%02d,%02d,%02d,%02d,%02d,%02d,%02d]",
                 this->selected_subcarriers_[0], this->selected_subcarriers_[1],
                 this->selected_subcarriers_[2], this->selected_subcarriers_[3],
                 this->selected_subcarriers_[4], this->selected_subcarriers_[5],
                 this->selected_subcarriers_[6], this->selected_subcarriers_[7],
                 this->selected_subcarriers_[8], this->selected_subcarriers_[9],
                 this->selected_subcarriers_[10], this->selected_subcarriers_[11]);
-  ESP_LOGCONFIG(TAG, "    Source: %s", this->user_specified_subcarriers_ ? "User (YAML)" : "Auto-calibrated (NBVI)");
-  
-  // Traffic Generator
-  ESP_LOGCONFIG(TAG, "  Traffic Generator:");
-  ESP_LOGCONFIG(TAG, "    Rate: %u pps", this->traffic_generator_rate_);
-  ESP_LOGCONFIG(TAG, "    Status: %s", this->traffic_generator_.is_running() ? "Running" : "Stopped");
-  
-  // Hampel Filter
-  ESP_LOGCONFIG(TAG, "  Hampel Filter (Turbulence):");
-  ESP_LOGCONFIG(TAG, "    Enabled: %s", this->hampel_enabled_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, " └─ Source ............. %s", 
+                this->user_specified_subcarriers_ ? "YAML" : "Auto (NBVI)");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, " TRAFFIC GENERATOR");
+  ESP_LOGCONFIG(TAG, " ├─ Rate ............... %u pps", this->traffic_generator_rate_);
+  ESP_LOGCONFIG(TAG, " └─ Status ............. %s", 
+                this->traffic_generator_.is_running() ? "[RUNNING]" : "[STOPPED]");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, " HAMPEL FILTER");
+  ESP_LOGCONFIG(TAG, " ├─ Status ............. %s", this->hampel_enabled_ ? "[ENABLED]" : "[DISABLED]");
   if (this->hampel_enabled_) {
-    ESP_LOGCONFIG(TAG, "    Window: %d packets", this->hampel_window_);
-    ESP_LOGCONFIG(TAG, "    Threshold: %.1f MAD", this->hampel_threshold_);
+    ESP_LOGCONFIG(TAG, " ├─ Window ............. %d pkts", this->hampel_window_);
+    ESP_LOGCONFIG(TAG, " └─ Threshold .......... %.1f MAD", this->hampel_threshold_);
   }
-  
-  // Sensors Status
-  ESP_LOGCONFIG(TAG, "  Sensors:");
-  ESP_LOGCONFIG(TAG, "    Movement: %s", this->sensor_publisher_.has_movement_sensor() ? "Configured" : "Not configured");
-  ESP_LOGCONFIG(TAG, "    Motion Binary: %s", this->sensor_publisher_.has_motion_binary_sensor() ? "Configured" : "Not configured");
-  ESP_LOGCONFIG(TAG, "    Threshold: %s", this->sensor_publisher_.has_threshold_sensor() ? "Configured" : "Not configured");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, " SENSORS");
+  ESP_LOGCONFIG(TAG, " ├─ Movement ........... %s", 
+                this->sensor_publisher_.has_movement_sensor() ? "[OK]" : "[--]");
+  ESP_LOGCONFIG(TAG, " └─ Motion Binary ...... %s", 
+                this->sensor_publisher_.has_motion_binary_sensor() ? "[OK]" : "[--]");
+  ESP_LOGCONFIG(TAG, "");
 }
 
 }  // namespace espectre

@@ -128,7 +128,7 @@ esp_err_t CSIManager::enable(csi_processed_callback_t packet_callback) {
   }
   
   enabled_ = true;
-  ESP_LOGI(TAG, "CSI enabled successfully");
+  ESP_LOGD(TAG, "CSI enabled successfully");
   
   return ESP_OK;
 }

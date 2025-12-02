@@ -233,11 +233,14 @@ ESPectre uses a simple, focused processing pipeline for motion detection:
 
 Each sensor is automatically discovered by Home Assistant with:
 - Binary sensor for motion detection
-- Numeric sensors for movement score and threshold
+- Movement score sensor
+- Adjustable threshold (number entity)
 
 ### Automatic Subcarrier Selection
 
 ESPectre implements the **NBVI (Normalized Baseline Variability Index)** algorithm for automatic subcarrier selection, achieving near-optimal performance (F1=97.1%) with **zero manual configuration**.
+
+> ⚠️ **IMPORTANT**: Keep the room **quiet and still** for 10 seconds after device boot. The auto-calibration runs during this time and movement will affect detection accuracy.
 
 NBVI automatically selects the optimal 12 subcarriers from the 64 available in WiFi CSI by analyzing their stability and signal strength during a baseline period. The calibration runs automatically:
 - **At first boot** (if no saved configuration exists)
@@ -365,7 +368,8 @@ CSI data represents only the properties of the transmission medium and does not 
 #### 5️⃣ **Home Assistant Integration**
 - **ESPHome Native API** provides automatic device discovery
 - **Binary Sensor**: Motion detected (on/off)
-- **Numeric Sensors**: Movement score and threshold
+- **Movement Sensor**: Current motion intensity value
+- **Number Entity**: Adjustable threshold from Home Assistant
 - **History**: Automatic logging to database for graphs
 
 ![Segmentation Analysis](images/mvs.png)

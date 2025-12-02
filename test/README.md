@@ -1,4 +1,4 @@
-# ESPectre Test Suite
+# 🛜 ESPectre 👻 - Test Suite
 
 Test suite based on **PlatformIO Unity** to validate ESPectre CSI algorithms.
 

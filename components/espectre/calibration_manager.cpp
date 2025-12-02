@@ -127,8 +127,8 @@ esp_err_t CalibrationManager::run_calibration_() {
   }
   
   ESP_LOGD(TAG, "Starting calibration...");
-  ESP_LOGD(TAG, "  Window size: %d packets", window_size_);
-  ESP_LOGD(TAG, "  Step size: %d packets", window_step_);
+  ESP_LOGV(TAG, "  Window size: %d packets", window_size_);
+  ESP_LOGV(TAG, "  Step size: %d packets", window_step_);
   
   // Step 1: Find baseline window
   uint16_t baseline_start;
@@ -138,7 +138,7 @@ esp_err_t CalibrationManager::run_calibration_() {
     return err;
   }
   
-  ESP_LOGD(TAG, "Using %d packets for calibration (starting at %d)",
+  ESP_LOGV(TAG, "Using %d packets for calibration (starting at %d)",
            window_size_, baseline_start);
   
   // Step 2: Calculate NBVI for all subcarriers
@@ -211,7 +211,7 @@ esp_err_t CalibrationManager::find_baseline_window_(uint16_t* out_window_start) 
     return ESP_FAIL;
   }
   
-  ESP_LOGD(TAG, "Analyzing %d windows (size=%d, step=%d)",
+  ESP_LOGV(TAG, "Analyzing %d windows (size=%d, step=%d)",
            num_windows, window_size_, window_step_);
   
   std::vector<WindowVariance> windows(num_windows);

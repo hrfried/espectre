@@ -182,6 +182,7 @@ bool csi_processor_init(csi_processor_context_t *ctx,
     return true;
 }
 
+// used in test code only
 void csi_processor_reset(csi_processor_context_t *ctx) {
     if (!ctx) return;
     
@@ -189,8 +190,6 @@ void csi_processor_reset(csi_processor_context_t *ctx) {
     ctx->state = CSI_STATE_IDLE;
     ctx->packet_index = 0;
     ctx->total_packets_processed = 0;
-    
-    ESP_LOGD(TAG, "CSI processor reset (buffer and parameters preserved)");
 }
 
 void csi_processor_cleanup(csi_processor_context_t *ctx) {
@@ -336,12 +335,12 @@ static void add_turbulence_and_update_state(csi_processor_context_t *ctx, float 
     if (ctx->state == CSI_STATE_IDLE) {
         if (ctx->current_moving_variance > ctx->threshold) {
             ctx->state = CSI_STATE_MOTION;
-            ESP_LOGD(TAG, "Motion started at packet %lu", (unsigned long)ctx->packet_index);
+            ESP_LOGV(TAG, "Motion started at packet %lu", (unsigned long)ctx->packet_index);
         }
     } else {
         if (ctx->current_moving_variance < ctx->threshold) {
             ctx->state = CSI_STATE_IDLE;
-            ESP_LOGD(TAG, "Motion ended at packet %lu", (unsigned long)ctx->packet_index);
+            ESP_LOGV(TAG, "Motion ended at packet %lu", (unsigned long)ctx->packet_index);
         }
     }
     

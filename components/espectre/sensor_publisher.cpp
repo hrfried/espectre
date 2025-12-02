@@ -21,7 +21,6 @@ void SensorPublisher::publish_all(const csi_processor_context_t *processor,
   
   // Get current values
   float moving_variance = csi_processor_get_moving_variance(processor);
-  float threshold = csi_processor_get_threshold(processor);
   bool is_motion = (motion_state == CSI_STATE_MOTION);
   
   // Publish motion sensors
@@ -31,10 +30,6 @@ void SensorPublisher::publish_all(const csi_processor_context_t *processor,
   
   if (movement_sensor_) {
     movement_sensor_->publish_state(moving_variance);
-  }
-  
-  if (threshold_sensor_) {
-    threshold_sensor_->publish_state(threshold);
   }
 }
 

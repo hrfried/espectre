@@ -15,6 +15,7 @@
 #include "esphome/core/preferences.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
+#include "esphome/components/number/number.h"
 
 // Include ESP-IDF WiFi headers
 #include "esp_wifi.h"
@@ -65,8 +66,14 @@ class ESpectreComponent : public Component {
   
   // Setters for ESPHome sensors (delegated to SensorPublisher)
   void set_movement_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_movement_sensor(sensor); }
-  void set_threshold_sensor(sensor::Sensor *sensor) { this->sensor_publisher_.set_threshold_sensor(sensor); }
   void set_motion_binary_sensor(binary_sensor::BinarySensor *sensor) { this->sensor_publisher_.set_motion_binary_sensor(sensor); }
+  
+  // Setter for threshold number control
+  void set_threshold_number(number::Number *num) { this->threshold_number_ = num; }
+  
+  // Runtime threshold adjustment (called from HA via number component)
+  void set_threshold_runtime(float threshold);
+  float get_threshold() const { return this->segmentation_threshold_; }
   
  protected:
   // WiFi lifecycle callbacks
@@ -95,6 +102,9 @@ class ESpectreComponent : public Component {
   ConfigurationManager config_manager_;
   CalibrationManager calibration_manager_;
   TrafficGeneratorManager traffic_generator_;
+  
+  // Number controls
+  number::Number *threshold_number_{nullptr};
   
   // State flags
   bool ready_to_publish_{false};  // True when CSI is ready and calibration done

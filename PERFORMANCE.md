@@ -1,4 +1,4 @@
-# 📊 ESPectre Performance Metrics
+# 🛜 ESPectre 👻 - Performance Metrics
 
 This document provides detailed performance metrics for ESPectre's motion detection system based on Moving Variance Segmentation (MVS).
 

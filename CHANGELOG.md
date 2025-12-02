@@ -32,9 +32,10 @@ This release represents a major architectural shift from standalone ESP-IDF firm
 
 **Implementation:**
 - `components/espectre/`: Complete ESPHome component with Python config and C++ implementation
-- Modular C++ architecture: `calibration_manager`, `csi_manager`, `filter_manager`, `sensor_publisher`, etc.
+- Modular C++ architecture: `calibration_manager`, `csi_manager`, `sensor_publisher`, etc.
 - Binary sensor for motion detection
-- Numeric sensors for movement score, threshold, and optional features
+- Movement score sensor
+- Adjustable threshold (number entity) - controllable from Home Assistant
 
 **Configuration Example:**
 ```yaml
@@ -45,11 +46,10 @@ external_components:
 espectre:
   traffic_generator_rate: 100
   segmentation_threshold: 1.0
-
-binary_sensor:
-  - platform: espectre
-    motion:
-      name: "Motion Detected"
+  # Sensors are created automatically:
+  # - "Movement Score" (sensor)
+  # - "Motion Detected" (binary_sensor)
+  # - "Threshold" (number - adjustable from HA)
 ```
 
 ### 📚 Documentation Overhaul
