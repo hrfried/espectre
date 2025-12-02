@@ -129,7 +129,7 @@ Micro-ESPectre uses MQTT for maximum flexibility - it's not tied to Home Assista
 ### Software
 - MicroPython with esp32-csi module installed
 - MQTT broker (Home Assistant, Mosquitto, etc.)
-- Python 3.12+ (for deployment scripts, CLI, and analysis tools)
+- Python 3.12 (Recommended for deployment scripts, CLI, and analysis tools)
 
 ## 🔧 CLI Tool Overview
 

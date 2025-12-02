@@ -1,14 +1,14 @@
 # ESPectre Test Suite
 
-Test suite basata su **PlatformIO Unity** per validare algoritmi CSI di ESPectre.
+Test suite based on **PlatformIO Unity** to validate ESPectre CSI algorithms.
 
 ## 🎯 Overview
 
-La test suite è stata convertita da ESP-IDF a PlatformIO per:
-- ✅ Integrazione con l'ambiente ESPHome (stesso virtualenv)
-- ✅ Setup semplificato (nessuna installazione ESP-IDF separata)
-- ✅ Comando unico per eseguire test (`pio test`)
-- ✅ Migliore integrazione con VSCode e CI/CD
+The test suite has been converted from ESP-IDF to PlatformIO for:
+- ✅ Integration with ESPHome environment (same virtualenv)
+- ✅ Simplified setup (no separate ESP-IDF installation)
+- ✅ Single command to run tests (`pio test`)
+- ✅ Better integration with VSCode and CI/CD
 
 **Total Tests**: 25
 - **Performance Tests (CORE)**: 2
@@ -23,64 +23,58 @@ La test suite è stata convertita da ESP-IDF a PlatformIO per:
 
 ### Prerequisites
 
-PlatformIO è già installato nel virtualenv ESPHome:
+**PlatformIO** is a professional embedded development platform that simplifies building and testing firmware for microcontrollers. The `pio` command-line tool is already installed in the ESPHome virtualenv:
 
 ```bash
-# Attiva virtualenv ESPHome
+# Activate ESPHome virtualenv
 source ../venv/bin/activate  # On macOS/Linux
 # ..\venv\Scripts\activate   # On Windows
 
-# Verifica PlatformIO
+# Verify PlatformIO
 pio --version
 ```
 
 ### Build and Run Tests
 
+Tests can be executed in two modes:
+
+1. **Local (Native)** - Tests run on your computer using mocked ESP-IDF libraries for fast iteration
+2. **On Device** - Tests run on actual ESP32 hardware for real-world validation
+
+**Note**: Some ESP-IDF libraries (e.g., `esp_wifi`, `nvs_flash`) have been mocked to enable local testing without hardware.
+
 ```bash
 cd test
 
-# Esegui tutti i test
+# Run all tests LOCALLY (native, no hardware needed)
 pio test
 
-# Esegui test specifici
-pio test -f test_filters
-pio test -f test_performance
+# Run tests ON DEVICE (requires ESP32 connected)
+pio test --without-uploading  # Upload and run on device
 
-# Con output verboso
-pio test -v
+# Run specific tests on device
+pio test -f test_filters --without-uploading
+pio test -f test_performance --without-uploading
 
-# Su porta specifica
-pio test --upload-port /dev/ttyUSB0
-```
+# With verbose output
+pio test -v --without-uploading
 
-### Capture Test Output for Analysis
-
-```bash
-cd test
-pio test | tee test_output.log
-```
-
-### Analyze Results with Python
-
-```bash
-cd test
-pip install -r requirements.txt  # Se non già fatto
-python analyze_test_results.py test_output.log
-open test_results/report.html
+# On specific port
+pio test --upload-port /dev/ttyUSB0 --without-uploading
 ```
 
 ---
 
 ## 📁 Test Suite Structure
 
-### Struttura Directory
+### Directory Structure
 
 ```
 test/
-├── platformio.ini              # Configurazione PlatformIO
+├── platformio.ini              # PlatformIO configuration
 ├── src/
-│   └── main.cpp               # Main dummy (test in test/)
-├── test/                       # Test PlatformIO Unity
+│   └── main.cpp               # Dummy main (tests in test/)
+├── test/                       # PlatformIO Unity tests
 │   ├── test_filters/
 │   │   └── test_filters.cpp
 │   ├── test_segmentation/
@@ -90,11 +84,10 @@ test/
 │   └── test_performance/
 │       └── test_performance.cpp
 ├── lib/
-│   └── espectre/              # Symlink a components/espectre
-├── data/                       # Dati CSI reali
-│   ├── real_csi_arrays.inc
-│   └── real_csi_data_esp32.h
-└── analyze_test_results.py    # Analisi risultati
+│   └── espectre/              # Symlink to components/espectre
+└── data/                       # Real CSI data
+    ├── real_csi_arrays.inc
+    └── real_csi_data_esp32.h
 ```
 
 ### 📊 Performance Tests (CORE) - 2 tests
@@ -157,7 +150,7 @@ Wavelet denoising and signal processing tests:
 
 ## 🔧 PlatformIO Configuration
 
-Il file `platformio.ini` configura:
+The `platformio.ini` file configures:
 
 - **Platform**: ESP32 (espressif32)
 - **Framework**: ESP-IDF
@@ -184,18 +177,6 @@ Rank  Feature                   Recall    FN Rate   FP Rate   F1-Score
 ✅  2  spatial_gradient         63.18%    36.82%    21.72%    56.63%
 ⚠️   3  entropy                  59.70%    40.30%    67.98%    52.44%
 ```
-
----
-
-## 🐍 Python Analysis Tools
-
-The `analyze_test_results.py` script generates:
-- `test_results/roc_curve.png` - ROC curve
-- `test_results/precision_recall_curve.png` - Precision-Recall curve
-- `test_results/confusion_matrix.png` - Confusion matrix heatmap
-- `test_results/temporal_scenarios.png` - Scenario comparison
-- `test_results/home_assistant_summary.png` - Integration assessment
-- `test_results/report.html` - **Comprehensive HTML report**
 
 ---
 
@@ -231,33 +212,6 @@ The `analyze_test_results.py` script generates:
 2. **Optimize Threshold** - Use `threshold_optimization_for_recall`
 3. **Analyze with Python** - Generate visualizations for better insights
 
----
-
-## 📝 Example Workflow
-
-```bash
-# 1. Attiva virtualenv
-source ../venv/bin/activate  # On macOS/Linux
-# ..\venv\Scripts\activate   # On Windows
-
-# 2. Build e run tests
-cd test
-pio test | tee test_output.log
-
-# 3. Analyze results
-python analyze_test_results.py test_output.log
-
-# 4. View report
-open test_results/report.html  # macOS
-# or xdg-open test_results/report.html  # Linux
-# or start test_results/report.html  # Windows
-
-# 5. Adjust configuration based on recommendations
-# Edit components/espectre/*.cpp or use MQTT commands
-
-# 6. Re-run tests to validate improvements
-pio test
-```
 
 ---
 
@@ -309,16 +263,16 @@ pio test -f test_my_feature
 
 ---
 
-## 🔄 Migrazione da ESP-IDF
+## 🔄 Migration from ESP-IDF
 
-Questa test suite è stata convertita da ESP-IDF a PlatformIO per semplificare l'uso.
+This test suite has been converted from ESP-IDF to PlatformIO to simplify usage.
 
-**Differenze principali:**
+**Main differences:**
 
 | ESP-IDF | PlatformIO |
 |---------|------------|
 | `idf.py build flash monitor` | `pio test` |
-| Richiede ESP-IDF installato | Usa PlatformIO (già in virtualenv) |
+| Requires ESP-IDF installed | Uses PlatformIO (already in virtualenv) |
 | `TEST_CASE_ESP(name, "[tag]")` | `void test_name(void)` + `RUN_TEST()` |
 | `test_app_main.c` | `test/test_*/test_*.cpp` |
 
@@ -332,10 +286,10 @@ For issues or questions:
 
 ---
 
-## 🎉 Vantaggi PlatformIO
+## 🎉 PlatformIO Benefits
 
-1. ✅ **Stesso ambiente ESPHome** - Nessun setup aggiuntivo
-2. ✅ **Comando semplice** - `pio test` invece di `idf.py build flash monitor`
-3. ✅ **Integrazione VSCode** - Debugging, IntelliSense nativo
-4. ✅ **CI/CD facile** - Un solo comando per GitHub Actions
-5. ✅ **Cross-platform** - Funziona su Windows/Mac/Linux
+1. ✅ **Same ESPHome environment** - No additional setup
+2. ✅ **Simple command** - `pio test` instead of `idf.py build flash monitor`
+3. ✅ **VSCode integration** - Native debugging, IntelliSense
+4. ✅ **Easy CI/CD** - Single command for GitHub Actions
+5. ✅ **Cross-platform** - Works on Windows/Mac/Linux

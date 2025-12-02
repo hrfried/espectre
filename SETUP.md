@@ -14,7 +14,7 @@ Complete guide to install and configure ESPectre with ESPHome.
 - Wi-Fi router (2.4 GHz, 802.11b|g|n|ax)
 
 **Software:**
-- Python 3.12 or newer
+- Python 3.12 (⚠️ Python 3.14 has known issues with ESPHome)
 - ESPHome 2024.x or newer
 - Home Assistant (recommended, but optional)
 
@@ -45,9 +45,18 @@ python3 -m venv venv
 source venv/bin/activate  # On macOS/Linux
 # venv\Scripts\activate   # On Windows
 
+# Your prompt should now show (venv) prefix
+
 # Install ESPHome
 pip install esphome
 ```
+
+**Why use a virtual environment?**
+- Isolates project dependencies from system Python
+- Prevents version conflicts with other projects
+- Makes the project portable and reproducible
+
+**Note:** Remember to activate the virtual environment (`source venv/bin/activate`) every time you open a new terminal session to work with this project.
 
 **Create secrets file:**
 
