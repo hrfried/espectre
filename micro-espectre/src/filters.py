@@ -1,6 +1,8 @@
 """
 Micro-ESPectre - Signal Filters
-Pure Python implementation for MicroPython
+
+Optimized Python implementation for MicroPython.
+Uses pre-allocated buffers and insertion sort for efficiency.
 
 Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3
@@ -22,6 +24,11 @@ class HampelFilter:
     3. Calculates MAD (Median Absolute Deviation)
     4. If current value deviates more than threshold*MAD, replace with median
     
+    This implementation uses:
+    - Pre-allocated buffers (no dynamic list creation per call)
+    - Circular buffer for main storage
+    - Insertion sort (faster than Timsort for small N)
+    
     This is ideal for filtering turbulence values before MVS calculation
     as it removes outliers that cause false positives without smoothing
     the signal (which would reduce sensitivity).
@@ -37,8 +44,35 @@ class HampelFilter:
                       Higher values = less aggressive filtering
         """
         self.window_size = window_size
-        self.threshold = threshold
-        self.buffer = []
+        # Pre-calculate threshold * 1.4826 to avoid runtime multiplication
+        self.scaled_threshold = threshold * 1.4826
+        
+        # Pre-allocated buffers (no allocation during filter())
+        self.buffer = [0.0] * window_size
+        self.sorted_buffer = [0.0] * window_size
+        
+        # Circular buffer state
+        self.count = 0
+        self.index = 0
+    
+    def _insertion_sort(self, arr, n):
+        """
+        In-place insertion sort for small arrays
+        
+        Faster than Python's Timsort for N < 10-15 elements
+        due to lower overhead (no function calls, cache-friendly).
+        
+        Args:
+            arr: Array to sort (modified in place)
+            n: Number of elements to sort
+        """
+        for i in range(1, n):
+            key = arr[i]
+            j = i - 1
+            while j >= 0 and arr[j] > key:
+                arr[j + 1] = arr[j]
+                j -= 1
+            arr[j + 1] = key
     
     def filter(self, value):
         """
@@ -50,40 +84,42 @@ class HampelFilter:
         Returns:
             float: Filtered value (either original or replaced with median)
         """
-        # Add value to buffer
-        self.buffer.append(value)
-        
-        # Keep only window_size values
-        if len(self.buffer) > self.window_size:
-            self.buffer.pop(0)
+        # Add to circular buffer
+        self.buffer[self.index] = value
+        self.index = (self.index + 1) % self.window_size
+        if self.count < self.window_size:
+            self.count += 1
         
         # Need at least 3 values for meaningful MAD calculation
-        if len(self.buffer) < 3:
+        if self.count < 3:
             return value
         
-        # Calculate median using simple sorting
-        # Create a copy to avoid modifying original buffer
-        sorted_buffer = []
-        for v in self.buffer:
-            sorted_buffer.append(v)
-        sorted_buffer.sort()
+        n = self.count
+        mid = n >> 1  # n // 2 using bit shift
         
-        n = len(sorted_buffer)
-        median = sorted_buffer[n // 2]
+        # Copy to sorted buffer and calculate deviations in single pass
+        # First pass: copy and sort for median
+        for i in range(n):
+            self.sorted_buffer[i] = self.buffer[i]
         
-        # Calculate MAD (Median Absolute Deviation)
-        deviations = []
-        for v in self.buffer:
-            deviations.append(abs(v - median))
-        deviations.sort()
+        self._insertion_sort(self.sorted_buffer, n)
+        median = self.sorted_buffer[mid]
         
-        mad = deviations[n // 2]
+        # Second pass: calculate deviations and sort for MAD
+        # Reuse sorted_buffer for deviations (saves one buffer)
+        for i in range(n):
+            diff = self.buffer[i] - median
+            self.sorted_buffer[i] = diff if diff >= 0 else -diff  # inline abs
+        
+        self._insertion_sort(self.sorted_buffer, n)
+        mad = self.sorted_buffer[mid]
         
         # Check if current value is an outlier
-        # Using 1.4826 as scaling factor (converts MAD to std deviation equivalent)
+        # scaled_threshold = threshold * 1.4826 (pre-calculated)
         if mad > 1e-6:  # Avoid division by zero
-            deviation = abs(value - median) / (1.4826 * mad)
-            if deviation > self.threshold:
+            diff = value - median
+            deviation = (diff if diff >= 0 else -diff) / mad  # inline abs
+            if deviation > self.scaled_threshold:
                 # Value is an outlier - replace with median
                 return median
         
@@ -92,4 +128,6 @@ class HampelFilter:
     
     def reset(self):
         """Reset filter state (clear buffer)"""
-        self.buffer = []
+        self.count = 0
+        self.index = 0
+        # No need to clear pre-allocated buffers - they'll be overwritten
