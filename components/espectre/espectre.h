@@ -30,6 +30,7 @@
 #include "config_manager.h"
 #include "calibration_manager.h"
 #include "traffic_generator_manager.h"
+#include "serial_streamer.h"
 
 namespace esphome {
 namespace espectre {
@@ -51,6 +52,8 @@ class ESpectreComponent : public Component {
   void set_segmentation_threshold(float threshold) { this->segmentation_threshold_ = threshold; }
   void set_segmentation_window_size(uint16_t size) { this->segmentation_window_size_ = size; }
   void set_traffic_generator_rate(uint32_t rate) { this->traffic_generator_rate_ = rate; }
+  void set_lowpass_enabled(bool enabled) { this->lowpass_enabled_ = enabled; }
+  void set_lowpass_cutoff(float cutoff) { this->lowpass_cutoff_ = cutoff; }
   void set_hampel_enabled(bool enabled) { this->hampel_enabled_ = enabled; }
   void set_hampel_window(uint8_t window) { this->hampel_window_ = window; }
   void set_hampel_threshold(float threshold) { this->hampel_threshold_ = threshold; }
@@ -80,6 +83,9 @@ class ESpectreComponent : public Component {
   void on_wifi_connected_();
   void on_wifi_disconnected_();
   
+  // Send system info over serial (for game display)
+  void send_system_info_();
+  
   // C state (core modules)
   csi_processor_context_t csi_processor_{};
   csi_motion_state_t motion_state_{};
@@ -88,9 +94,12 @@ class ESpectreComponent : public Component {
   float segmentation_threshold_{1.0f};
   uint16_t segmentation_window_size_{50};
   uint32_t traffic_generator_rate_{100};
-  bool hampel_enabled_{true};
+  bool lowpass_enabled_{true};      // Low-pass filter enabled by default
+  float lowpass_cutoff_{11.0f};     // Default cutoff frequency in Hz
+  bool hampel_enabled_{false};
   uint8_t hampel_window_{7};
   float hampel_threshold_{4.0f};
+  float normalization_scale_{1.0f};   // Normalization scale (attenuate if baseline > 0.25)
   uint8_t selected_subcarriers_[12] = {11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22};
   
   bool user_specified_subcarriers_{false};  // True if user specified in YAML
@@ -102,12 +111,17 @@ class ESpectreComponent : public Component {
   ConfigurationManager config_manager_;
   CalibrationManager calibration_manager_;
   TrafficGeneratorManager traffic_generator_;
+  SerialStreamer serial_streamer_;
   
   // Number controls
   number::Number *threshold_number_{nullptr};
   
+  // Calibration results (for diagnostics)
+  float baseline_variance_{0.0f};
+  
   // State flags
-  bool ready_to_publish_{false};  // True when CSI is ready and calibration done
+  bool ready_to_publish_{false};      // True when CSI is ready and calibration done
+  bool threshold_republished_{false}; // True after threshold has been re-published to HA
 };
 
 }  // namespace espectre

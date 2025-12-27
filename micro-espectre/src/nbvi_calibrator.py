@@ -16,36 +16,76 @@ import os
 NUM_SUBCARRIERS = 64
 BUFFER_FILE = '/nbvi_buffer.bin'
 
+# Normalization target: if baseline > 0.25, attenuate to reach this value
+# If baseline <= 0.25, no scaling is applied (prevents over-amplification)
+NORMALIZATION_BASELINE_TARGET = 0.25
+
+# Threshold for null subcarrier detection (mean amplitude below this = null)
+# This is environment-aware: works with any chip and adapts to local RF conditions
+NULL_SUBCARRIER_THRESHOLD = 1.0
+
+# OFDM 20MHz guard band limits - these subcarriers should always be excluded
+# [0-5] and [59-63] are guard bands, [32] is DC null
+GUARD_BAND_LOW = 11   # First valid subcarrier (conservative, excludes edge noise)
+GUARD_BAND_HIGH = 52  # Last valid subcarrier (conservative, excludes edge noise)
+DC_SUBCARRIER = 32    # DC null (always excluded)
+
+
+def get_valid_subcarriers(chip_type=None):
+    """
+    Get all subcarrier indices for calibration.
+    
+    Null subcarrier detection is now dynamic during calibration based on
+    actual signal strength (mean < NULL_SUBCARRIER_THRESHOLD = null).
+    This is environment-aware and works with any chip type.
+    
+    Args:
+        chip_type: Ignored (kept for backward compatibility)
+    
+    Returns:
+        tuple: All subcarrier indices (0-63)
+    """
+    # Return all subcarriers - null detection happens during calibration
+    return tuple(range(NUM_SUBCARRIERS))
+
 
 class NBVICalibrator:
     """
     Automatic NBVI calibrator with percentile-based baseline detection
     
     Collects CSI packets at boot and automatically selects optimal subcarriers
-    using NBVI Weighted α=0.3 algorithm with percentile-based detection.
+    using NBVI Weighted α=0.5 algorithm with percentile-based detection.
     
     Uses file-based storage to avoid RAM limitations. Magnitudes stored as
     uint8 (max CSI magnitude ~181 fits in 1 byte). This allows collecting
     thousands of packets without memory issues.
+    
+    Normalization is always enabled: attenuates baseline if > 0.25, otherwise
+    no scaling is applied to prevent over-amplification of weak signals.
     """
     
-    def __init__(self, buffer_size=1000, percentile=10, alpha=0.3, min_spacing=3):
+    def __init__(self, buffer_size=700, percentile=10, alpha=0.5, min_spacing=1, 
+                 noise_gate_percentile=25, chip_type=None):
         """
         Initialize NBVI calibrator
         
         Args:
-            buffer_size: Number of packets to collect (default: 1000)
+            buffer_size: Number of packets to collect (default: 700)
             percentile: Percentile for baseline detection (default: 10)
-            alpha: NBVI weighting factor (default: 0.3)
-            min_spacing: Minimum spacing between subcarriers (default: 3)
+            alpha: NBVI weighting factor (default: 0.5)
+            min_spacing: Minimum spacing between subcarriers (default: 1)
+            noise_gate_percentile: Percentile for noise gate (default: 25)
+            chip_type: Ignored (kept for backward compatibility)
         """
         self.buffer_size = buffer_size
         self.percentile = percentile
         self.alpha = alpha
         self.min_spacing = min_spacing
-        self.noise_gate_percentile = 10
+        self.noise_gate_percentile = noise_gate_percentile
+        self.chip_type = chip_type  # Kept for backward compatibility
         self._packet_count = 0
         self._file = None
+        self._baseline_variance = 1.0  # Stored for normalization calculation
         
         # Remove old buffer file if exists
         try:
@@ -76,8 +116,18 @@ class NBVICalibrator:
             q_idx = sc * 2 + 1
             
             if q_idx < len(csi_data):
+                # CSI I/Q values are signed int8 (-128 to 127)
+                # On MicroPython ESP32: frame[5] is array('b') = signed int8
+                # On Python tests with numpy: already int8
+                # On Python tests with bytes: need conversion from unsigned
                 I = csi_data[i_idx]
                 Q = csi_data[q_idx]
+                # Handle unsigned bytes (0-255) from Python tests
+                # MicroPython array('b') returns signed directly, so no conversion needed there
+                if I > 127:
+                    I = I - 256
+                if Q > 127:
+                    Q = Q - 256
                 # Calculate magnitude as uint8 (max ~181 fits in byte)
                 mag = int(math.sqrt(I*I + Q*Q))
                 magnitudes[sc] = min(mag, 255)  # Clamp to uint8
@@ -141,27 +191,65 @@ class NBVICalibrator:
         
         return variance
     
-    def _find_baseline_window_percentile(self, current_band, window_size=100, step=50):
+    def _calculate_baseline_variance(self, baseline_window, selected_band):
         """
-        Find baseline window using percentile-based detection
+        Recalculate baseline variance using the SELECTED subcarriers.
         
-        NO absolute threshold - adapts automatically to environment
+        This is called after NBVI selection to get accurate variance for the actual band used.
+        The initial baseline_variance was calculated with current_band (default [11-22]),
+        but NBVI may select different subcarriers, so we need to recalculate.
+        
+        Args:
+            baseline_window: List of packet magnitudes from the baseline window
+            selected_band: List of selected subcarrier indices from NBVI
+        
+        Returns:
+            float: Recalculated baseline variance for the selected band
+        """
+        if not baseline_window or not selected_band:
+            return 0.0
+        
+        # Calculate spatial turbulence for each packet using the SELECTED subcarriers
+        turbulences = []
+        for packet_mags in baseline_window:
+            # Extract magnitudes for selected band
+            band_mags = [packet_mags[sc] for sc in selected_band if sc < len(packet_mags)]
+            if band_mags:
+                # Spatial turbulence = std of subcarrier magnitudes
+                mean_mag = sum(band_mags) / len(band_mags)
+                variance = sum((m - mean_mag) ** 2 for m in band_mags) / len(band_mags)
+                std = math.sqrt(variance) if variance > 0 else 0.0
+                turbulences.append(std)
+        
+        # Calculate variance of turbulence (moving variance)
+        if turbulences:
+            return self._calculate_variance_two_pass(turbulences)
+        
+        return 0.0
+    
+    def _find_candidate_windows(self, current_band, window_size=200, step=50):
+        """
+        Find all candidate baseline windows using percentile-based detection.
+        
+        NO absolute threshold - adapts automatically to environment.
+        Returns all windows below percentile threshold, sorted by variance.
         
         Args:
             current_band: Current subcarrier band (for variance calculation)
-            window_size: Size of analysis window (default: 100 packets)
+            window_size: Size of analysis window (default: 200 packets)
             step: Step size for sliding window (default: 50 packets)
         
         Returns:
-            tuple: (best_window, stats_dict) or (None, None) if not found
+            list: List of (start_idx, variance) tuples, sorted by variance (ascending)
+                  Empty list if no candidates found
         """
         if self._packet_count < window_size:
-            return None, None
+            return []
         
         # Analyze sliding windows - store only variance and start index to save memory
         window_results = []
         
-        for i in range(0, self._packet_count - window_size, step):
+        for i in range(0, self._packet_count - window_size + 1, step):
             # Read window from file
             window = self._read_window(i, window_size)
             if len(window) < window_size:
@@ -192,35 +280,17 @@ class NBVICalibrator:
                 gc.collect()
         
         if not window_results:
-            return None, None
+            return []
         
         # Calculate percentile threshold (adaptive!)
         variances = [w[1] for w in window_results]
         p_threshold = self._percentile(variances, self.percentile)
         
-        # Find windows below percentile
-        baseline_candidates = [w for w in window_results if w[1] <= p_threshold]
+        # Find windows below percentile and sort by variance (best first)
+        candidates = [w for w in window_results if w[1] <= p_threshold]
+        candidates.sort(key=lambda x: x[1])  # Sort by variance, ascending
         
-        if not baseline_candidates:
-            return None, None
-        
-        # Use window with minimum variance
-        best_result = min(baseline_candidates, key=lambda x: x[1])
-        best_start = best_result[0]
-        
-        # Re-read the best window from file
-        best_window = self._read_window(best_start, window_size)
-        
-        # Return window and stats for logging
-        stats = {
-            'variance': best_result[1],
-            'threshold': p_threshold,
-            'windows_analyzed': len(window_results),
-            'baseline_candidates': len(baseline_candidates),
-            'start_idx': best_start
-        }
-        
-        return best_window, stats
+        return candidates
     
     def _percentile(self, values, p):
         """Calculate percentile (simple implementation)"""
@@ -243,9 +313,9 @@ class NBVICalibrator:
     
     def _calculate_nbvi_weighted(self, magnitudes):
         """
-        Calculate NBVI Weighted α=0.3
+        Calculate NBVI Weighted (configurable alpha, default 0.5)
         
-        NBVI = 0.3 × (σ/μ²) + 0.7 × (σ/μ)
+        NBVI = α × (σ/μ²) + (1-α) × (σ/μ)
         
         Args:
             magnitudes: List of magnitude values for a subcarrier
@@ -265,7 +335,7 @@ class NBVICalibrator:
         variance = sum((m - mean) ** 2 for m in magnitudes) / len(magnitudes)
         std = math.sqrt(variance) if variance > 0 else 0.0
         
-        # NBVI Weighted α=0.3
+        # NBVI Weighted (configurable alpha)
         cv = std / mean
         nbvi_energy = std / (mean * mean)
         nbvi_weighted = self.alpha * nbvi_energy + (1 - self.alpha) * cv
@@ -286,13 +356,19 @@ class NBVICalibrator:
         Returns:
             list: Filtered metrics (strong subcarriers only)
         """
-        means = [m['mean'] for m in subcarrier_metrics]
-        threshold = self._percentile(means, self.noise_gate_percentile)
+        # Extract NON-ZERO means only (skip invalid subcarriers with mean <= 1.0)
+        valid_means = [m['mean'] for m in subcarrier_metrics if m['mean'] > 1.0]
+        
+        if not valid_means:
+            print("NBVI: Noise Gate - no valid subcarriers found")
+            return []
+        
+        threshold = self._percentile(valid_means, self.noise_gate_percentile)
         
         filtered = [m for m in subcarrier_metrics if m['mean'] >= threshold]
         
         #print(f"NBVI: Noise Gate excluded {len(subcarrier_metrics) - len(filtered)} weak subcarriers")
-        #print(f"  Threshold: {threshold:.2f} (p{self.noise_gate_percentile})")
+        #print(f"  Threshold: {threshold:.2f} (p{self.noise_gate_percentile}, valid: {len(valid_means)})")
         
         return filtered
     
@@ -340,78 +416,226 @@ class NBVICalibrator:
         
         return selected
     
+    def _validate_subcarriers(self, band, mvs_window_size=50, mvs_threshold=1.0):
+        """
+        Validate subcarriers by running MVS on entire buffer.
+        
+        The calibration buffer contains ONLY baseline data (quiet room), so any
+        motion detection is a false positive.
+        
+        Args:
+            band: List of subcarrier indices to validate
+            mvs_window_size: MVS window size (default: 50, production value)
+            mvs_threshold: MVS threshold (default: 1.0, production value)
+        
+        Returns:
+            float: FP rate (0.0 = perfect, 1.0 = all packets detected as motion)
+        """
+        if self._packet_count < mvs_window_size:
+            return 0.0
+        
+        # Build turbulence buffer for MVS
+        turbulence_buffer = [0.0] * mvs_window_size
+        motion_count = 0
+        total_packets = 0
+        
+        # Process entire buffer packet by packet
+        for pkt_idx in range(self._packet_count):
+            # Read single packet
+            packet_mags = self._read_packet(pkt_idx)
+            if packet_mags is None:
+                continue
+            
+            # Calculate spatial turbulence with candidate subcarriers
+            band_mags = [packet_mags[sc] for sc in band if sc < len(packet_mags)]
+            if not band_mags:
+                continue
+            
+            mean_mag = sum(band_mags) / len(band_mags)
+            variance = sum((m - mean_mag) ** 2 for m in band_mags) / len(band_mags)
+            turbulence = math.sqrt(variance) if variance > 0 else 0.0
+            
+            # Shift buffer and add new value (like real MVS does)
+            turbulence_buffer.pop(0)
+            turbulence_buffer.append(turbulence)
+            
+            # Skip warmup (need full window before calculating variance)
+            if pkt_idx < mvs_window_size:
+                continue
+            
+            # Calculate variance (MVS) - this is the moving variance
+            mv_variance = self._calculate_variance_two_pass(turbulence_buffer)
+            
+            # Check if this would trigger motion detection
+            if mv_variance > mvs_threshold:
+                motion_count += 1
+            total_packets += 1
+        
+        fp_rate = motion_count / total_packets if total_packets > 0 else 0.0
+        return fp_rate
+    
     def calibrate(self, current_band, window_size=None, step=None):
         """
-        Calibrate using NBVI Weighted α=0.3 with percentile-based detection
+        Calibrate using NBVI Weighted with percentile-based detection.
+        
+        Tries all candidate windows and selects the one with minimum FP rate
+        (matching C++ production behavior).
         
         Args:
             current_band: Current subcarrier band (for baseline detection)
-            window_size: Window size for baseline detection (default: from config)
-            step: Step size for sliding window (default: from config)
+            window_size: Window size for baseline detection (default: 200)
+            step: Step size for sliding window (default: 50)
         
         Returns:
-            list: Selected subcarrier band (12 subcarriers), or None if failed
+            tuple: (selected_band, normalization_scale) or (None, 1.0) if failed
+                - selected_band: List of 12 subcarrier indices
+                - normalization_scale: Factor to normalize CSI amplitudes across devices
         """
-        # Import config here to get current values
-        import src.config as config
-        
-        # Use config values if not provided
+        # Production defaults matching C++
         if window_size is None:
-            window_size = config.NBVI_WINDOW_SIZE
+            window_size = 200
         if step is None:
-            step = config.NBVI_WINDOW_STEP
-        
-        #print("\nNBVI: Starting calibration...")
-        #print(f"  Packets collected: {self._packet_count}")
-        #print(f"  Window size: {window_size} packets")
-        #print(f"  Step size: {step} packets")
+            step = 50
         
         # Prepare file for reading
         self._prepare_for_reading()
         
-        # Step 1: Find baseline window using percentile
-        baseline_window, baseline_stats = self._find_baseline_window_percentile(current_band, window_size, step)
+        # Step 1: Find all candidate baseline windows
+        candidates = self._find_candidate_windows(current_band, window_size, step)
         
-        if baseline_window is None:
-            print("NBVI: Failed to find baseline window")
-            return None
-                
-        # Step 2: Calculate NBVI for all 64 subcarriers
-        all_metrics = []
+        if not candidates:
+            print("NBVI: Failed to find candidate windows")
+            return None, 1.0
         
-        for sc in range(64):
-            # Extract magnitude series for this subcarrier
-            magnitudes = [packet_mags[sc] for packet_mags in baseline_window]
+        print(f"NBVI: Found {len(candidates)} candidate windows")
+        
+        # Step 2: Try all candidate windows and select the one with minimum FP rate
+        best_fp_rate = 1.0
+        best_band = None
+        best_baseline_window = None
+        best_avg_nbvi = 0.0
+        best_avg_mean = 0.0
+        best_window_idx = 0
+        
+        for idx, (start_idx, window_variance) in enumerate(candidates):
+            # Read this window
+            baseline_window = self._read_window(start_idx, window_size)
+            if len(baseline_window) < window_size:
+                continue
             
-            # Calculate NBVI
-            metrics = self._calculate_nbvi_weighted(magnitudes)
-            metrics['subcarrier'] = sc
-            all_metrics.append(metrics)
+            # Calculate NBVI for ALL subcarriers using this window
+            all_metrics = []
+            null_count = 0
+            
+            for sc in range(NUM_SUBCARRIERS):
+                # Extract magnitude series for this subcarrier
+                magnitudes = [packet_mags[sc] for packet_mags in baseline_window]
+                
+                # Calculate NBVI
+                metrics = self._calculate_nbvi_weighted(magnitudes)
+                metrics['subcarrier'] = sc
+                
+                # Exclude guard bands and DC subcarrier
+                if sc < GUARD_BAND_LOW or sc > GUARD_BAND_HIGH or sc == DC_SUBCARRIER:
+                    metrics['nbvi'] = float('inf')
+                    null_count += 1
+                # Auto-detect weak subcarriers
+                elif metrics['mean'] < NULL_SUBCARRIER_THRESHOLD:
+                    metrics['nbvi'] = float('inf')
+                    null_count += 1
+                
+                all_metrics.append(metrics)
+            
+            # Apply Noise Gate
+            filtered_metrics = self._apply_noise_gate(all_metrics)
+            
+            if len(filtered_metrics) < 12:
+                continue
+            
+            # Sort by NBVI (ascending - lower is better)
+            sorted_metrics = sorted(filtered_metrics, key=lambda x: x['nbvi'])
+            
+            # Select with spectral spacing
+            candidate_band = self._select_with_spacing(sorted_metrics, k=12)
+            
+            if len(candidate_band) != 12:
+                continue
+            
+            # VALIDATE: run MVS on entire buffer with selected subcarriers
+            fp_rate = self._validate_subcarriers(candidate_band)
+            
+            # Track best result (minimum FP rate)
+            if fp_rate < best_fp_rate:
+                best_fp_rate = fp_rate
+                best_band = candidate_band
+                best_baseline_window = baseline_window
+                best_window_idx = idx
+                
+                # Calculate average metrics for selected band
+                selected_metrics = [m for m in all_metrics if m['subcarrier'] in candidate_band]
+                best_avg_nbvi = sum(m['nbvi'] for m in selected_metrics) / len(selected_metrics)
+                best_avg_mean = sum(m['mean'] for m in selected_metrics) / len(selected_metrics)
+            
+            # Clean up memory
+            del baseline_window
+            del all_metrics
+            gc.collect()
         
-        # Step 3: Apply Noise Gate
-        filtered_metrics = self._apply_noise_gate(all_metrics)
+        if best_band is None:
+            # Fallback: keep default subcarriers but still calculate normalization
+            # Use the first (best) candidate window for baseline variance
+            print("NBVI: All candidate windows failed - using default subcarriers with normalization fallback")
+            
+            # Read first candidate window for baseline variance calculation
+            first_start_idx, _ = candidates[0]
+            fallback_window = self._read_window(first_start_idx, window_size)
+            
+            # Calculate baseline variance using current (default) subcarriers
+            baseline_variance = self._calculate_baseline_variance(fallback_window, list(current_band))
+            if baseline_variance < 0.01:
+                baseline_variance = 1.0  # Fallback
+            self._baseline_variance = baseline_variance
+            
+            # Calculate normalization scale
+            if baseline_variance > NORMALIZATION_BASELINE_TARGET:
+                normalization_scale = NORMALIZATION_BASELINE_TARGET / baseline_variance
+                if normalization_scale < 0.1:
+                    normalization_scale = 0.1
+            else:
+                normalization_scale = 1.0
+            
+            print(f"NBVI: Fallback calibration: default subcarriers with normalization")
+            print(f"  Baseline variance: {baseline_variance:.4f}")
+            print(f"  Normalization scale: {normalization_scale:.4f}")
+            
+            # Return default subcarriers (as list) with calculated normalization
+            return list(current_band), normalization_scale
         
-        if len(filtered_metrics) < 12:
-            print(f"NBVI: Not enough subcarriers after Noise Gate ({len(filtered_metrics)} < 12)")
-            return None
+        print(f"NBVI: Selected window {best_window_idx + 1}/{len(candidates)} with FP rate {best_fp_rate * 100:.1f}%")
         
-        # Step 4: Sort by NBVI (ascending - lower is better)
-        sorted_metrics = sorted(filtered_metrics, key=lambda x: x['nbvi'])
+        # Step 3: Calculate baseline variance using the SELECTED subcarriers
+        baseline_variance = self._calculate_baseline_variance(best_baseline_window, best_band)
+        if baseline_variance < 0.01:
+            baseline_variance = 1.0  # Fallback
+        self._baseline_variance = baseline_variance
         
-        # Step 5: Select with spectral spacing
-        selected_band = self._select_with_spacing(sorted_metrics, k=12)
+        # Normalize only if baseline variance is ABOVE target (0.25)
+        if baseline_variance > NORMALIZATION_BASELINE_TARGET:
+            normalization_scale = NORMALIZATION_BASELINE_TARGET / baseline_variance
+            if normalization_scale < 0.1:
+                normalization_scale = 0.1
+        else:
+            normalization_scale = 1.0
         
-        if len(selected_band) != 12:
-            print(f"NBVI: Invalid band size ({len(selected_band)} != 12)")
-            return None
+        print(f"NBVI: Calibration successful")
+        print(f"  Band: {best_band}")
+        print(f"  Avg NBVI: {best_avg_nbvi:.6f}")
+        print(f"  Avg magnitude: {best_avg_mean:.2f}")
+        print(f"  Baseline variance: {baseline_variance:.4f}")
+        print(f"  Normalization scale: {normalization_scale:.4f}")
+        print(f"  Validated FP rate: {best_fp_rate * 100:.1f}%")
         
-        # Calculate average metrics for selected band
-        selected_metrics = [m for m in all_metrics if m['subcarrier'] in selected_band]
-        avg_nbvi = sum(m['nbvi'] for m in selected_metrics) / len(selected_metrics)
-        avg_mean = sum(m['mean'] for m in selected_metrics) / len(selected_metrics)
-        
-        
-        return selected_band
+        return best_band, normalization_scale
     
     def free_buffer(self):
         """

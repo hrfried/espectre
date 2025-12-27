@@ -7,8 +7,10 @@
 
 #include "csi_manager.h"
 #include "calibration_manager.h"
+#include "gain_controller.h"
 #include "esphome/core/log.h"
 #include "esp_timer.h"
+#include "esp_attr.h"  // For IRAM_ATTR
 
 namespace esphome {
 namespace espectre {
@@ -20,6 +22,8 @@ void CSIManager::init(csi_processor_context_t* processor,
                      float segmentation_threshold,
                      uint16_t segmentation_window_size,
                      uint32_t publish_rate,
+                     bool lowpass_enabled,
+                     float lowpass_cutoff,
                      bool hampel_enabled,
                      uint8_t hampel_window,
                      float hampel_threshold,
@@ -34,11 +38,21 @@ void CSIManager::init(csi_processor_context_t* processor,
   // Set subcarrier selection
   csi_set_subcarrier_selection(selected_subcarriers_, NUM_SUBCARRIERS);
   
+  // Configure low-pass filter
+  lowpass_filter_init(&processor_->lowpass_state, lowpass_cutoff, LOWPASS_SAMPLE_RATE, lowpass_enabled);
+  
   // Configure Hampel filter
   hampel_turbulence_init(&processor_->hampel_state, hampel_window, hampel_threshold, hampel_enabled);
   
-  ESP_LOGD(TAG, "CSI Manager initialized (threshold: %.2f, window: %d, hampel: %s, window: %d)",
-           segmentation_threshold, segmentation_window_size, hampel_enabled ? "ON" : "OFF", hampel_window);
+  // Initialize gain controller for AGC/FFT locking
+  // Gain lock happens BEFORE NBVI calibration (300 packets, ~3 seconds)
+  // This ensures NBVI calibration has clean data with stable gain
+  gain_controller_.init(300);
+  
+  ESP_LOGD(TAG, "CSI Manager initialized (threshold: %.2f, window: %d, lowpass: %s@%.1fHz, hampel: %s@%d)",
+           segmentation_threshold, segmentation_window_size, 
+           lowpass_enabled ? "ON" : "OFF", lowpass_cutoff,
+           hampel_enabled ? "ON" : "OFF", hampel_window);
 }
 
 void CSIManager::update_subcarrier_selection(const uint8_t subcarriers[12]) {
@@ -52,8 +66,7 @@ void CSIManager::set_threshold(float threshold) {
   ESP_LOGD(TAG, "Threshold updated: %.2f", threshold);
 }
 
-void CSIManager::process_packet(wifi_csi_info_t* data,
-                                csi_motion_state_t& motion_state) {
+void CSIManager::process_packet(wifi_csi_info_t* data) {
   if (!data || !processor_) {
     return;
   }
@@ -66,39 +79,69 @@ void CSIManager::process_packet(wifi_csi_info_t* data,
     return;
   }
   
+  // Process gain calibration (collects packets, then locks AGC/FFT)
+  // During gain lock phase, we DISCARD packets (don't pass to NBVI)
+  // This ensures NBVI calibration only sees data with stable gain
+  if (!gain_controller_.is_locked()) {
+    gain_controller_.process_packet(data);
+    return;  // Discard packet during gain lock phase
+  }
+  
   // If calibration is in progress, delegate to calibration manager
   if (calibrator_ != nullptr && calibrator_->is_calibrating()) {
     calibrator_->add_packet(csi_data, csi_len);
     return;
   }
   
-  // Process CSI packet
+  // Process CSI packet (adds turbulence to buffer, no variance calculation)
   csi_process_packet(processor_,
                     csi_data, csi_len,
                     selected_subcarriers_,
                     NUM_SUBCARRIERS);
   
-  // Update motion state
-  motion_state = csi_processor_get_state(processor_);
-  
-  // Handle periodic callback
+  // Handle periodic callback (or game mode which needs every packet)
   packets_processed_++;
-  if (packets_processed_ >= publish_rate_) {
-    if (packet_callback_) {
-      packet_callback_(motion_state);
+  const bool should_publish = packets_processed_ >= publish_rate_;
+  
+  if (game_mode_callback_ || should_publish) {
+    // Calculate variance and update state
+    csi_processor_update_state(processor_);
+    
+    // Game mode callback: send data every packet for low-latency gameplay
+    if (game_mode_callback_) {
+      float movement = csi_processor_get_moving_variance(processor_);
+      float threshold = csi_processor_get_threshold(processor_);
+      game_mode_callback_(movement, threshold);
     }
-    packets_processed_ = 0;
+  
+    // Periodic publish callback
+    if (should_publish) {
+      // Detect WiFi channel changes (AP may switch channels automatically)
+      // Channel changes cause CSI spikes that trigger false motion detection
+      // Check only at publish time to reduce overhead
+      uint8_t packet_channel = data->rx_ctrl.channel;
+      if (current_channel_ != 0 && packet_channel != current_channel_) {
+        ESP_LOGW(TAG, "WiFi channel changed: %d -> %d, resetting detection buffer",
+                 current_channel_, packet_channel);
+        csi_processor_clear_buffer(processor_);
+      }
+      current_channel_ = packet_channel;
+      
+      if (packet_callback_) {
+        csi_motion_state_t state = csi_processor_get_state(processor_);
+        packet_callback_(state);
+      }
+      packets_processed_ = 0;
+    }
   }
 }
 
 // Static wrapper for ESP-IDF C callback
-void CSIManager::csi_rx_callback_wrapper_(void* ctx, wifi_csi_info_t* data) {
-  
+// IRAM_ATTR: Keep in IRAM for consistent low-latency execution from ISR context
+void IRAM_ATTR CSIManager::csi_rx_callback_wrapper_(void* ctx, wifi_csi_info_t* data) {
   CSIManager* manager = static_cast<CSIManager*>(ctx);
   if (manager && data) {
-    // Process packet directly in the manager
-    csi_motion_state_t dummy_state;
-    manager->process_packet(data, dummy_state);
+    manager->process_packet(data);
   }
 }
 
@@ -142,15 +185,23 @@ esp_err_t CSIManager::disable() {
     return ESP_OK;
   }
   
-  // Disable CSI (using injected interface)
+  // Disable CSI first to stop new callbacks from being invoked
   esp_err_t err = wifi_csi_->set_csi(false);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to disable CSI: %s", esp_err_to_name(err));
     return err;
   }
   
+  // Then unregister callback (safe now that CSI is disabled)
+  err = wifi_csi_->set_csi_rx_cb(nullptr, nullptr);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to unregister CSI callback: %s", esp_err_to_name(err));
+    return err;
+  }
+  
   enabled_ = false;
-  ESP_LOGI(TAG, "CSI disabled");
+  packet_callback_ = nullptr;
+  ESP_LOGI(TAG, "CSI disabled and callback unregistered");
   
   return ESP_OK;
 }
@@ -182,7 +233,7 @@ esp_err_t CSIManager::configure_platform_specific_() {
     .ltf_merge_en = false,          // No merge (only HT-LTF enabled)
     .channel_filter_en = false,     // Raw subcarriers
     .manu_scale = true,             // Manual scaling
-    .shift = 4,                     // Shift=4 → values/16, calibrated to match C6 auto-scale range
+    .shift = 4,                     // Shift=4 → values/16
   };
 #endif
   

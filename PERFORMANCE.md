@@ -1,4 +1,4 @@
-# 🛜 ESPectre 👻 - Performance Metrics
+# Performance Metrics
 
 This document provides detailed performance metrics for ESPectre's motion detection system based on Moving Variance Segmentation (MVS).
 
@@ -24,7 +24,14 @@ This document provides detailed performance metrics for ESPectre's motion detect
 
 ---
 
-## Confusion Matrix
+## Results
+
+Both platforms produce **identical results** using the same test methodology:
+- Process all 1000 baseline packets first (expecting IDLE)
+- Then process all 1000 movement packets (expecting MOTION)
+- Continuous context (no reset between baseline and movement)
+- Same parameters: window_size=50, threshold=1.0, subcarriers=[11-22]
+- Filters disabled (lowpass, hampel off by default), normalization always enabled
 
 ```
 CONFUSION MATRIX (1000 baseline + 1000 movement packets):
@@ -33,8 +40,6 @@ CONFUSION MATRIX (1000 baseline + 1000 movement packets):
 Actual IDLE     1000 (TN)   0 (FP)
 Actual MOTION   19 (FN)     981 (TP)
 ```
-
-### Metrics Breakdown
 
 | Metric | Value | Target | Status |
 |--------|-------|--------|--------|
@@ -50,6 +55,8 @@ Actual MOTION   19 (FN)     981 (TP)
 | True Negatives (TN) | 1000 | Idle correctly identified |
 | False Positives (FP) | 0 | No false alarms |
 | False Negatives (FN) | 19 | Missed movement detections |
+
+> **Note**: These tests were performed with optional filters disabled (lowpass, hampel). Normalization is always enabled for cross-device consistency. See [TUNING.md](TUNING.md) for filter configuration options.
 
 ---
 
@@ -89,12 +96,56 @@ Use Home Assistant's History panel to visualize:
 - **binary_sensor.espectre_motion_detected** - Motion events over time
 - **sensor.espectre_movement_score** - Movement intensity graph
 
-### Collecting Test Data
+---
 
-For rigorous testing, you can:
-1. Record baseline period (no movement) for 10+ seconds
-2. Record movement period (walking, gestures) for 10+ seconds
-3. Compare detection accuracy against ground truth
+## Reproducing These Results
+
+### Test Data Location
+
+Both platforms use the **same real CSI data** captured from ESP32-C6:
+
+| Platform | Baseline Data | Movement Data |
+|----------|---------------|---------------|
+| **C++** | `test/data/real_csi_data_esp32.h` | `test/data/real_csi_arrays.inc` |
+| **Python** | `micro-espectre/data/baseline/baseline_c6_001.npz` | `micro-espectre/data/movement/movement_c6_001.npz` |
+
+### Running the Tests
+
+**C++ (ESPHome component)**:
+
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Run motion detection test suite (shows confusion matrix)
+cd test
+pio test -f test_motion_detection -vvv
+```
+
+**Python (Micro-ESPectre)**:
+
+```bash
+# Activate virtual environment
+source venv/bin/activate
+
+# Run performance test
+cd micro-espectre/tests
+pytest test_validation_real_data.py::TestPerformanceMetrics::test_mvs_detection_accuracy -v -s
+```
+
+### Test Implementation
+
+| Platform | Test File | Test Function |
+|----------|-----------|---------------|
+| **C++** | `test/test/test_motion_detection/test_motion_detection.cpp` | `test_mvs_detection_accuracy()` |
+| **Python** | `micro-espectre/tests/test_validation_real_data.py` | `TestPerformanceMetrics::test_mvs_detection_accuracy()` |
+
+Both tests use identical methodology:
+1. Initialize MVS with `window_size=50`, `threshold=1.0`, `subcarriers=[11-22]`
+2. Process all 1000 baseline packets (no reset)
+3. Continue processing all 1000 movement packets (same context)
+4. Count TP, TN, FP, FN based on detected state vs expected state
+5. Assert: Recall > 95%, FP Rate < 1%
 
 ---
 
@@ -125,14 +176,41 @@ See [TUNING.md](TUNING.md) for detailed tuning instructions.
 
 ---
 
-## Version History
+## NBVI Automatic Calibration
 
-| Date | Version | Recall | FP Rate | Notes |
-|------|---------|--------|---------|-------|
-| 2025-11-28 | v1.4.0 | 98.1% | 0.0% | Current release |
+When using NBVI (Normalized Baseline Variability Index) for automatic subcarrier selection instead of the fixed band [11-22], performance is slightly lower but still excellent:
+
+| Metric | Fixed Band [11-22] | NBVI Auto-Calibration |
+|--------|--------------------|-----------------------|
+| **Recall** | 98.1% | 96.4% |
+| **Precision** | 100.0% | 100.0% |
+| **FP Rate** | 0.0% | 0.0% |
+| **F1-Score** | 99.0% | 98.2% |
+
+**Why use NBVI instead of fixed band?**
+
+The fixed band [11-22] achieves slightly better performance in the reference test environment, but **subcarrier quality varies significantly between environments** due to:
+- Room geometry and materials (walls, furniture, metal objects)
+- WiFi interference from neighboring networks
+- Distance and orientation relative to the access point
+- ESP32 variant and antenna characteristics
+
+**NBVI automatically selects the optimal subcarriers for each specific environment**, making it the recommended choice for production deployments. The fixed band is useful only for controlled test environments where optimal subcarriers have been manually identified.
 
 ---
 
-## 📄 License
+## Version History
+
+| Date | Version | Mode | Recall | Precision | FP Rate | F1-Score | Notes |
+|------|---------|------|--------|-----------|---------|----------|-------|
+| 2025-12-27 | v2.3.0 | Fixed | 98.1% | 100.0% | 0.0% | 99.0% | Multi-window validation |
+| 2025-12-27 | v2.3.0 | NBVI | 96.4% | 100.0% | 0.0% | 98.2% | Multi-window validation |
+| 2025-12-13 | v2.2.0 | Fixed | 98.1% | 100.0% | 0.0% | 99.0% | ESPHome Port |
+| 2025-12-13 | v2.2.0 | NBVI | 96.5% | 100.0% | 0.0% | 98.2% | ESPHome Port |
+| 2025-11-28 | v1.4.0 | Fixed | 98.1% | 100.0% | 0.0% | 99.0% | Initial MVS implementation |
+
+---
+
+## License
 
 GPLv3 - See [LICENSE](LICENSE) for details.

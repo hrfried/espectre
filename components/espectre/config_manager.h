@@ -19,16 +19,20 @@ namespace espectre {
 /**
  * Configuration structure
  * 
- * Stores all configurable parameters for ESPectre.
+ * Stores runtime-configurable parameters for ESPectre.
  * Persisted to flash using ESPHome preferences.
+ * 
+ * Currently only segmentation_threshold is persisted, as it's the only
+ * parameter adjustable at runtime via the Home Assistant slider.
+ * 
+ * All other settings come from YAML (compile-time) or are recalculated
+ * at boot (e.g., normalization_scale during NBVI calibration).
+ * 
+ * Note: Changes to this struct require updating the preference hash
+ * in espectre.cpp to avoid loading stale data.
  */
 struct ESpectreConfig {
-  float segmentation_threshold;
-  uint16_t segmentation_window_size;
-  uint32_t traffic_generator_rate;
-  bool hampel_enabled;
-  uint8_t hampel_window;
-  float hampel_threshold;
+  float segmentation_threshold;     // Motion detection threshold (adjustable via HA)
 };
 
 /**

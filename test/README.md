@@ -1,18 +1,18 @@
-# 🛜 ESPectre 👻 - Test Suite
+# Test Suite
 
 Test suite based on **PlatformIO Unity** to validate ESPectre CSI algorithms.
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # Activate virtualenv
 source ../venv/bin/activate
 
-# Run all tests locally (native)
-cd test && pio test -e native
+# Run all tests (native is the default environment)
+cd test && pio test
 
 # Run specific suite
-pio test -e native -f test_motion_detection
+pio test -f test_motion_detection
 
 # Run on ESP32-C6 device
 pio test -e esp32c6
@@ -20,24 +20,19 @@ pio test -e esp32c6
 
 ---
 
-## 🧪 Test Suites
+## Test Suites
 
-| Suite | Type | Data | Tests | Focus |
-|-------|------|------|-------|-------|
-| `test_csi_processor` | Unit | **Real** | 39 | API, getters, state machine |
-| `test_hampel_filter` | Unit | **Real** | 20 | Outlier removal filter |
-| `test_calibration` | Unit | **Real** | 33 | NBVI, magnitude, turbulence, compare, end-to-end CalibrationManager |
-| `test_calibration_manager` | Integration | **Real** | 24 | CalibrationManager API, file I/O, NBVI ranking, edge cases |
-| `test_csi_manager` | Integration | **Real** | 29 | CSIManager API, callbacks, motion detection, error paths |
-| `test_calibration_file_storage` | Unit | Synthetic | 9 | File-based magnitude storage |
-| `test_motion_detection` | Integration | **Real** | 3 | MVS performance metrics |
+| Suite | Type | Data | Focus |
+|-------|------|------|-------|
+| `test_csi_processor` | Unit | **Real** | API, getters, state machine, normalization, low-pass filter |
+| `test_hampel_filter` | Unit | **Real** | Outlier removal filter |
+| `test_calibration` | Unit | **Real** | NBVI, magnitude, turbulence, normalization scale, fallback |
+| `test_calibration_manager` | Integration | **Real** | CalibrationManager API, file I/O, NBVI ranking |
+| `test_csi_manager` | Integration | **Real** | CSIManager API, callbacks, motion detection |
+| `test_calibration_file_storage` | Unit | Synthetic | File-based magnitude storage |
+| `test_traffic_generator` | Unit | Synthetic | Error handling, rate limiting, adaptive backoff |
+| `test_motion_detection` | Integration | **Real** | MVS performance, NBVI end-to-end |
 
-### Test Counts
-
-| Environment | Tests | Notes |
-|-------------|-------|-------|
-| **Native** | 157 | Full suite with WiFiCSIMock |
-| **ESP32-C6** | 157 | Full suite with WiFiCSIMock (dependency injection) |
 
 ### Target Metrics (Motion Detection)
 - **Recall**: ≥95% (detect real movements)
@@ -45,7 +40,7 @@ pio test -e esp32c6
 
 ---
 
-## 📦 Real CSI Data
+## Real CSI Data
 
 The `data/` folder contains **2000 real CSI packets**:
 - 1000 baseline (empty room)
@@ -53,7 +48,7 @@ The `data/` folder contains **2000 real CSI packets**:
 
 ---
 
-## 📊 Code Coverage
+## Code Coverage
 
 Run tests with coverage instrumentation:
 
@@ -65,19 +60,18 @@ Run tests with coverage instrumentation:
 
 | File | Lines | Functions | Branches |
 |------|-------|-----------|----------|
-| `csi_manager.cpp` | **100%** | 100% | 94% |
-| `csi_manager.h` | **100%** | 100% | - |
-| `calibration_manager.h` | **100%** | 100% | - |
+| `csi_manager.cpp` | 92% | 100% | 85% |
+| `csi_processor.cpp` | 89% | 100% | 81% |
+| `calibration_manager.cpp` | 74% | 100% | 65% |
 | `utils.h` | 92% | 100% | 69% |
-| `csi_processor.cpp` | 91% | 100% | 84% |
-| `calibration_manager.cpp` | 75% | 100% | 63% |
-| **Total** | **84%** | **95%** | **74%** |
+| `gain_controller.cpp` | 75% | 50% | - |
+| **Total** | **76%** | **75%** | **70%** |
 
 > **Note**: Coverage measured on Codecov (CI). Tests use real CSI data from ESP32-C6 captures.
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 test/
@@ -92,7 +86,7 @@ test/
 
 ---
 
-## ➕ Adding New Tests
+## Adding New Tests
 
 Create `test/test_my_feature/test_my_feature.cpp`:
 
@@ -123,6 +117,6 @@ int main(int argc, char **argv) { return process(); }
 
 ---
 
-## 📄 License
+## License
 
 GPLv3 - See [LICENSE](../LICENSE) for details.

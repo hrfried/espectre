@@ -12,8 +12,10 @@
 
 #include "esp_wifi.h"
 #include "esp_err.h"
+#include "esp_attr.h"  // For IRAM_ATTR
 #include "csi_processor.h"
 #include "wifi_csi_interface.h"
+#include "gain_controller.h"
 #include <functional>
 
 namespace esphome {
@@ -24,6 +26,9 @@ class CalibrationManager;
 
 // Callback type for processed CSI data
 using csi_processed_callback_t = std::function<void(csi_motion_state_t)>;
+
+// Callback type for game mode (called every packet with movement and threshold)
+using game_mode_callback_t = std::function<void(float movement, float threshold)>;
 
 /**
  * CSI Manager
@@ -42,6 +47,8 @@ class CSIManager {
    * @param segmentation_threshold Motion detection threshold
    * @param segmentation_window_size Moving variance window size
    * @param publish_rate Number of packets before triggering callback
+   * @param lowpass_enabled Whether low-pass filter is enabled
+   * @param lowpass_cutoff Low-pass filter cutoff frequency in Hz
    * @param hampel_enabled Whether Hampel filter is enabled
    * @param hampel_window Hampel window size (3-11)
    * @param hampel_threshold Hampel threshold (MAD multiplier)
@@ -52,6 +59,8 @@ class CSIManager {
             float segmentation_threshold,
             uint16_t segmentation_window_size,
             uint32_t publish_rate,
+            bool lowpass_enabled,
+            float lowpass_cutoff,
             bool hampel_enabled,
             uint8_t hampel_window,
             float hampel_threshold,
@@ -89,13 +98,11 @@ class CSIManager {
   /**
    * Process incoming CSI packet
    * 
-   * Orchestrates: calibration check → processing
+   * Orchestrates: calibration check → processing → callbacks
    * 
    * @param data CSI packet data
-   * @param motion_state Output for motion state
    */
-  void process_packet(wifi_csi_info_t* data,
-                     csi_motion_state_t& motion_state);
+  void process_packet(wifi_csi_info_t* data);
   
   /**
    * Set calibration mode
@@ -111,21 +118,71 @@ class CSIManager {
    */
   bool is_enabled() const { return enabled_; }
   
+  /**
+   * Check if gain is locked
+   * 
+   * @return true if gain calibration is complete
+   */
+  bool is_gain_locked() const { return gain_controller_.is_locked(); }
+  
+  /**
+   * Get the number of packets used for gain lock calibration
+   * 
+   * @return Calibration packet count (default: 300)
+   */
+  uint16_t get_gain_lock_packets() const { return gain_controller_.get_calibration_packets(); }
+  
+  /**
+   * Get the gain controller (for status reporting)
+   * 
+   * @return Reference to gain controller
+   */
+  const GainController& get_gain_controller() const { return gain_controller_; }
+  
+  /**
+   * Set callback for when gain lock completes
+   * 
+   * Use this to trigger NBVI calibration after gain is locked.
+   * 
+   * @param callback Function to call when gain is locked
+   */
+  void set_gain_lock_callback(GainController::lock_complete_callback_t callback) {
+    gain_controller_.set_lock_complete_callback(callback);
+  }
+  
+  /**
+   * Set game mode callback
+   * 
+   * When set, this callback is called every CSI packet with movement and threshold.
+   * Used for low-latency game mode communication.
+   * 
+   * @param callback Function to call every packet (nullptr to disable)
+   */
+  void set_game_mode_callback(game_mode_callback_t callback) {
+    game_mode_callback_ = callback;
+  }
+  
  private:
   // Static wrapper for ESP-IDF C callback
-  static void csi_rx_callback_wrapper_(void* ctx, wifi_csi_info_t* data);
+  // IRAM_ATTR: Keep in IRAM for consistent low-latency execution from ISR context
+  static void IRAM_ATTR csi_rx_callback_wrapper_(void* ctx, wifi_csi_info_t* data);
   
   bool enabled_{false};
   csi_processor_context_t* processor_{nullptr};
   const uint8_t* selected_subcarriers_{nullptr};
   CalibrationManager* calibrator_{nullptr};
   csi_processed_callback_t packet_callback_;
+  game_mode_callback_t game_mode_callback_;
   uint32_t publish_rate_{100};
-  uint32_t packets_processed_{0};
+  volatile uint32_t packets_processed_{0};  // volatile: modified from ISR callback
+  uint8_t current_channel_{0};  // Track WiFi channel for change detection
   
   // WiFi CSI interface (injected or default real implementation)
   IWiFiCSI* wifi_csi_{nullptr};
   WiFiCSIReal default_wifi_csi_;
+  
+  // Gain controller for AGC/FFT locking
+  GainController gain_controller_;
   
   static constexpr uint8_t NUM_SUBCARRIERS = 12;
   

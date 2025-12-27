@@ -13,7 +13,7 @@ from pathlib import Path
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import sensor, binary_sensor, number
-from esphome.components.esp32 import add_extra_build_file
+from esphome.components.esp32 import add_extra_build_file, add_idf_sdkconfig_option
 from esphome.const import (
     CONF_ID,
     STATE_CLASS_MEASUREMENT,
@@ -31,6 +31,10 @@ CONF_SEGMENTATION_THRESHOLD = "segmentation_threshold"
 CONF_SEGMENTATION_WINDOW_SIZE = "segmentation_window_size"
 CONF_TRAFFIC_GENERATOR_RATE = "traffic_generator_rate"
 CONF_SELECTED_SUBCARRIERS = "selected_subcarriers"
+
+# Low-pass filter
+CONF_LOWPASS_ENABLED = "lowpass_enabled"
+CONF_LOWPASS_CUTOFF = "lowpass_cutoff"
 
 # Hampel filter
 CONF_HAMPEL_ENABLED = "hampel_enabled"
@@ -64,8 +68,12 @@ CONFIG_SCHEMA = cv.Schema({
         cv.Length(min=1, max=12)
     ),
     
+    # Low-pass filter for noise reduction (disabled by default)
+    cv.Optional(CONF_LOWPASS_ENABLED, default=False): cv.boolean,
+    cv.Optional(CONF_LOWPASS_CUTOFF, default=11.0): cv.float_range(min=5.0, max=20.0),
+    
     # Hampel filter for turbulence outlier removal
-    cv.Optional(CONF_HAMPEL_ENABLED, default=True): cv.boolean,
+    cv.Optional(CONF_HAMPEL_ENABLED, default=False): cv.boolean,
     cv.Optional(CONF_HAMPEL_WINDOW, default=7): cv.int_range(min=3, max=11),
     cv.Optional(CONF_HAMPEL_THRESHOLD, default=4.0): cv.float_range(min=1.0, max=10.0),
     
@@ -99,6 +107,18 @@ async def to_code(config):
         # Tell PlatformIO to use our custom partition table
         cg.add_platformio_option("board_build.partitions", "partitions.csv")
     
+    # Set required sdkconfig options for CSI functionality
+    # These are automatically applied - user doesn't need to specify them in YAML
+    add_idf_sdkconfig_option("CONFIG_ESP_WIFI_CSI_ENABLED", True)
+    add_idf_sdkconfig_option("CONFIG_PM_ENABLE", False)
+    add_idf_sdkconfig_option("CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE", False)
+    
+    # CSI optimization options (based on Espressif esp-csi recommendations)
+    add_idf_sdkconfig_option("CONFIG_ESP_WIFI_AMPDU_TX_ENABLED", False)
+    add_idf_sdkconfig_option("CONFIG_ESP_WIFI_AMPDU_RX_ENABLED", False)
+    add_idf_sdkconfig_option("CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM", 128)
+    # Note: CONFIG_FREERTOS_HZ=1000 is already set by ESPHome
+    
     # Configure parameters
     cg.add(var.set_segmentation_threshold(config[CONF_SEGMENTATION_THRESHOLD]))
     cg.add(var.set_segmentation_window_size(config[CONF_SEGMENTATION_WINDOW_SIZE]))
@@ -107,6 +127,10 @@ async def to_code(config):
     # Configure subcarriers if specified
     if CONF_SELECTED_SUBCARRIERS in config:
         cg.add(var.set_selected_subcarriers(config[CONF_SELECTED_SUBCARRIERS]))
+    
+    # Configure Low-pass filter
+    cg.add(var.set_lowpass_enabled(config[CONF_LOWPASS_ENABLED]))
+    cg.add(var.set_lowpass_cutoff(config[CONF_LOWPASS_CUTOFF]))
     
     # Configure Hampel filter
     cg.add(var.set_hampel_enabled(config[CONF_HAMPEL_ENABLED]))
