@@ -57,25 +57,19 @@
 <body>
     <canvas id="cosmic-bg"></canvas>
 
-    <header>
-        <a href="/" class="logo">
-            <span class="logo-icon"><i class="fas fa-wifi"></i></span>
-            <span>ESPectre</span>
-            <span class="logo-icon"><i class="fas fa-ghost"></i></span>
-        </a>
-        <button class="menu-toggle" aria-label="Toggle menu">
-            <i class="fas fa-bars"></i>
-        </button>
-        <nav>
-            <a href="/game/"><i class="fas fa-gamepad"></i> The Game</a>
-            <a href="https://medium.com/@francesco.pace/how-i-turned-my-wi-fi-into-a-motion-sensor-61a631a9b4ec?sk=c7f79130d78b0545fce4a228a6a79af3&utm_source=espectre.dev&utm_medium=index.html&utm_campaign=espectre"><i class="fab fa-medium"></i> Medium Story</a>
-            <a href="https://github.com/francescopace/espectre/issues"><i class="fas fa-bug"></i> Issues</a>
-            <a href="https://github.com/francescopace/espectre/discussions"><i class="fas fa-comments"></i> Discussions</a>
-            <a href="https://github.com/francescopace/espectre/blob/main/ROADMAP.md"><i class="fas fa-map"></i> Roadmap</a>
-        </nav>
+    <header id="site-header">
+        <noscript>
+            <a href="/" class="logo">ESPectre</a>
+            <nav>
+                <a href="/game/">The Game</a>
+                <a href="https://github.com/francescopace/espectre">GitHub</a>
+                <a href="https://github.com/francescopace/espectre/issues">Issues</a>
+                <a href="https://github.com/francescopace/espectre/discussions">Discussions</a>
+            </nav>
+        </noscript>
     </header>
 
-    <main>
+    <main id="main-content">
         <section class="hero">
             <div class="hero-badge">
                 <span class="dot"></span>
@@ -151,7 +145,7 @@
                 <div class="feature-card">
                     <div class="feature-icon"><i class="fas fa-square-root-variable"></i></div>
                     <h3>Pure Math</h3>
-                    <p>MVS algorithm with NBVI auto-calibration. No ML training required. Works out of the box.</p>
+                    <p>MVS algorithm with subcarrier band auto-calibration. No ML training required. Works out of the box.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon"><i class="fas fa-flask"></i></div>
@@ -184,7 +178,7 @@
             <div class="game-card">
                 <div class="game-icon"><i class="fas fa-gamepad"></i></div>
                 <h3>ESPectre - The Game</h3>
-                <p>A browser-based reaction game powered by ESPectre. Connect your ESP32 via USB and use your body movements to defeat WiFi spectres. No controller needed.</p>
+                <p>A browser-based reaction game powered by ESPectre. Connect your ESP32 via Bluetooth and use your body movements to defeat WiFi spectres. No controller needed.</p>
                 <a href="/game/" class="btn btn-primary">
                     <i class="fas fa-play"></i> Play Now
                 </a>
@@ -192,20 +186,15 @@
         </section>
     </main>
 
-    <footer>
-        <p class="footer-copy">
-            <a href="mailto:contact@espectre.dev"><i class="fas fa-envelope"></i> Contact</a>
-            <a href="mailto:security@espectre.dev"><i class="fas fa-shield-halved"></i> Security</a>
-            <a href="https://linkedin.com/in/francescopace"><i class="fas fa-user"></i> Francesco Pace</a>
-        </p>
-        <p class="footer-copyright">© 2025 ESPectre Project · GPLv3 License</p>
-    </footer>
+    <footer id="site-footer"></footer>
 
+    <script src="components.js"></script>
+    <script>loadHeader(); loadFooter();</script>
     <script src="cosmic-bg.js"></script>
-    <script src="main.js"></script>
-
-    <!-- Buy Me a Coffee floating widget -->
-    <script data-name="BMC-Widget" data-cfasync="false" src="https://cdnjs.buymeacoffee.com/1.0.0/widget.prod.min.js" data-id="espectre" data-description="Support me on Buy me a coffee!" data-message="Like ESPectre? Support it!" data-color="#40DCA5" data-position="Right" data-x_margin="18" data-y_margin="18"></script>
+    <script src="analytics.js"></script>
+    
+    <!-- Buy Me a Coffee Widget -->
+    <script data-name="BMC-Widget" data-cfasync="false" src="https://cdnjs.buymeacoffee.com/1.0.0/widget.prod.min.js" data-id="espectre" data-description="Support me on Buy me a coffee!" data-color="#40DCA5" data-position="Right" data-x_margin="18" data-y_margin="18"></script>
 </body>
 
 </html>

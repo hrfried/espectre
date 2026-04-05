@@ -83,29 +83,36 @@ cd test && pio test
 # Python tests (Micro-ESPectre)
 cd micro-espectre && pytest tests/ -v
 
-# With coverage
-pytest tests/ -v --cov=src --cov-report=term-missing
+# With coverage (run from micro-espectre/)
+cd micro-espectre && pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
 ---
 
 ## Code Contributions
 
+### Branching Model
+
+ESPectre uses a simple branching model:
+
+- **`develop`**: Active development branch. All PRs should target this branch.
+- **`main`**: Stable release branch. Merges from `develop` when releasing.
+
 ### Workflow
 
 1. **Fork** the repository on GitHub
 2. **Clone** your fork locally
-3. **Create a branch** from `main`:
+3. **Create a branch** from `develop`:
    ```bash
-   git checkout main
-   git pull origin main
+   git checkout develop
+   git pull origin develop
    git checkout -b feature/your-feature-name
    ```
 4. **Make changes** with tests and documentation
 5. **Run tests** to ensure nothing is broken
 6. **Commit** with clear messages (see [Commit Guidelines](#commit-guidelines))
 7. **Push** to your fork
-8. **Open a Pull Request** to the `main` branch
+8. **Open a Pull Request** to the `develop` branch
 
 ### Commit Guidelines
 
@@ -129,7 +136,7 @@ Use clear, descriptive commit messages:
 **Examples:**
 ```
 feat: add low-pass filter for noise reduction
-fix: correct NBVI calculation for edge cases
+fix: correct calibration for edge cases
 docs: update TUNING.md with filter examples
 test: add unit tests for Hampel filter
 ```
@@ -176,7 +183,7 @@ License: GPLv3
 
 ### Pull Request Guidelines
 
-- **Target branch**: Always `main`
+- **Target branch**: Always `develop` (not `main`)
 - **Title**: Clear, descriptive title
 - **Description**: Explain what and why
 - **Tests**: Include tests for new functionality
@@ -316,11 +323,19 @@ All contributors are recognized in:
 
 ## License
 
-By contributing to ESPectre, you agree that your contributions will be licensed under the **GPLv3** license. This means:
+By contributing to ESPectre, you agree that your contributions are licensed
+under the **GPLv3** license.
 
-- Your code will remain free and open source
-- You retain copyright of your contributions
-- No CLA (Contributor License Agreement) is required
+In addition, by submitting a contribution you agree to the
+[Contributor License Agreement](CLA.md), which grants the maintainer the
+right to relicense your contribution in future distributions. You retain full
+ownership of your contribution.
+Contributions in this repository remain available under GPLv3.
+
+### CLA Requirement
+
+All pull requests require CLA acceptance. If you have not signed yet, follow
+the instructions shown in the CLA check or bot comment.
 
 See [LICENSE](LICENSE) for details.
 

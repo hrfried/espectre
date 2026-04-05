@@ -4,7 +4,17 @@
 
 This directory contains analysis tools for developing and validating ESPectre's motion detection algorithms. These scripts are essential for parameter tuning, algorithm validation, and scientific analysis.
 
-For algorithm documentation (MVS, NBVI, Hampel filter), see [ALGORITHMS.md](../ALGORITHMS.md).
+## Supported Chips
+
+All analysis tools support any ESP32 variant with CSI capability:
+- **ESP32** (original)
+- **ESP32-C3**
+- **ESP32-S3**
+- **ESP32-C6**
+
+Use `--chip <name>` to specify the chip (e.g., `--chip c3`, `--chip s3`). Most tools default to C6 if not specified.
+
+For algorithm documentation (MVS, NBVI calibration, Hampel filter), see [ALGORITHMS.md](../ALGORITHMS.md).
 
 For production performance metrics, see [PERFORMANCE.md](../../PERFORMANCE.md).
 
@@ -14,34 +24,9 @@ For data collection and ML datasets, see [ML_DATA_COLLECTION.md](../ML_DATA_COLL
 
 ## Table of Contents
 
-- [Quick Start](#quick-start)
 - [Analysis Scripts](#analysis-scripts)
 - [Usage Examples](#usage-examples)
 - [Key Results](#key-results)
-
----
-
-## Quick Start
-
-```bash
-# Activate virtual environment
-source ../venv/bin/activate
-
-# Collect CSI data samples (requires ESP32 streaming)
-cd ..
-./me stream --ip <PC_IP>     # On one terminal
-./me collect --label baseline_noisy --duration 60 --chip c6  # On another
-./me collect --label movement --duration 10 --chip c6
-cd tools
-
-# Optimize filter parameters
-python 6_optimize_filter_params.py c6           # Low-pass optimization
-python 6_optimize_filter_params.py c6 --hampel  # Hampel optimization
-
-# Run analysis
-python 2_analyze_system_tuning.py --quick
-python 3_analyze_moving_variance_segmentation.py --plot
-```
 
 ---
 
@@ -49,14 +34,18 @@ python 3_analyze_moving_variance_segmentation.py --plot
 
 ### 1. Raw Data Analysis (`1_analyze_raw_data.py`)
 
-**Purpose**: Visualize raw CSI amplitude data and identify patterns
+**Purpose**: Analyze data quality and verify dataset integrity
 
-- Analyzes subcarrier patterns and noise characteristics
-- Helps identify most informative subcarriers
-- Visualizes signal strength distribution
+- Default mode reads `dataset_info.json` and analyzes all explicit historical pairs
+- Verifies labels are correct (baseline vs movement)
+- Compares turbulence variance between states
+- Prints a compact table with per-pair metrics (`Baseline Var`, `Movement Var`, `Ratio`, `Gap end->start`, status)
+- Supports per-chip detailed mode on the most recent dataset for that chip
 
 ```bash
-python 1_analyze_raw_data.py
+python 1_analyze_raw_data.py           # Historical table from dataset_info.json
+python 1_analyze_raw_data.py --chip C6 # Detailed analysis on latest C6 dataset
+python 1_analyze_raw_data.py --chip C3 # Detailed analysis on latest C3 dataset
 ```
 
 ---
@@ -70,8 +59,9 @@ python 1_analyze_raw_data.py
 - Finds optimal parameter combinations
 
 ```bash
-python 2_analyze_system_tuning.py          # Full grid search
-python 2_analyze_system_tuning.py --quick  # Reduced parameter space
+python 2_analyze_system_tuning.py              # Full grid search (default: C6)
+python 2_analyze_system_tuning.py --chip S3    # Use S3 dataset
+python 2_analyze_system_tuning.py --quick      # Reduced parameter space
 ```
 
 ---
@@ -85,8 +75,9 @@ python 2_analyze_system_tuning.py --quick  # Reduced parameter space
 - Validates current configuration
 
 ```bash
-python 3_analyze_moving_variance_segmentation.py
-python 3_analyze_moving_variance_segmentation.py --plot  # Show graphs
+python 3_analyze_moving_variance_segmentation.py              # Use C6 dataset
+python 3_analyze_moving_variance_segmentation.py --chip S3    # Use S3 dataset
+python 3_analyze_moving_variance_segmentation.py --plot       # Show graphs
 ```
 
 ---
@@ -100,8 +91,9 @@ python 3_analyze_moving_variance_segmentation.py --plot  # Show graphs
 - Determines optimal filter location
 
 ```bash
-python 4_analyze_filter_location.py
-python 4_analyze_filter_location.py --plot  # Show visualizations
+python 4_analyze_filter_location.py              # Use C6 dataset
+python 4_analyze_filter_location.py --chip S3    # Use S3 dataset
+python 4_analyze_filter_location.py --plot       # Show visualizations
 ```
 
 ---
@@ -120,9 +112,9 @@ python 4_analyze_filter_location.py --plot  # Show visualizations
 - **Combined**: Best of both - spike removal + noise smoothing
 
 ```bash
-python 5_analyze_filter_turbulence.py              # Run all filter comparisons
-python 5_analyze_filter_turbulence.py --plot       # Show 4-panel visualization:
-                                                   #   No Filter | Hampel | Lowpass | Combined
+python 5_analyze_filter_turbulence.py              # Use C6 dataset
+python 5_analyze_filter_turbulence.py --chip S3    # Use S3 dataset
+python 5_analyze_filter_turbulence.py --plot       # Show 4-panel visualization
 python 5_analyze_filter_turbulence.py --optimize-filters  # Optimize parameters
 ```
 
@@ -132,9 +124,10 @@ python 5_analyze_filter_turbulence.py --optimize-filters  # Optimize parameters
 
 **Purpose**: Optimize low-pass and Hampel filter parameters
 
-- Optimizes normalization target and low-pass cutoff frequency
+- Optimizes low-pass cutoff frequency and threshold parameters
 - Grid search for Hampel filter parameters (window, threshold)
-- Supports chip-specific data filtering (c6, s3)
+- Auto-detects chip from baseline file metadata (ensures matching movement data)
+- Automatically selects optimal subcarrier band based on subcarrier count
 - Finds optimal configuration for noisy environments
 
 ```bash
@@ -142,25 +135,23 @@ python 6_optimize_filter_params.py              # Low-pass optimization
 python 6_optimize_filter_params.py c6           # Use only C6 data
 python 6_optimize_filter_params.py --hampel     # Hampel optimization
 python 6_optimize_filter_params.py c6 --hampel  # C6 + Hampel
+python 6_optimize_filter_params.py --all        # Combined optimization (low-pass + Hampel)
 ```
-
-**Current optimal configuration (60s noisy baseline):**
-- Low-pass: Cutoff=11 Hz, Target=28 → Recall 92.4%, FP 2.3%
-- With Hampel: Window=9, Threshold=4.0 → **Recall 92.1%, FP 0.84%, F1 93.2%**
 
 ---
 
 ### 7. Detection Methods Comparison (`7_compare_detection_methods.py`)
 
-**Purpose**: Compare different motion detection methods
+**Purpose**: Compare different motion detection algorithms
 
-- Compares RSSI, Mean Amplitude, Turbulence, and MVS
-- Demonstrates MVS superiority
+- Compares RSSI, Mean Amplitude, Turbulence, and MVS detection methods
+- Demonstrates MVS superiority with simpler approach and lower CPU
 - Shows separation between baseline and movement
 
 ```bash
-python 7_compare_detection_methods.py
-python 7_compare_detection_methods.py --plot  # Show 4×2 comparison
+python 7_compare_detection_methods.py              # Use C6 dataset
+python 7_compare_detection_methods.py --chip S3    # Use S3 dataset
+python 7_compare_detection_methods.py --plot       # Show 5×2 comparison
 ```
 
 ![Detection Methods Comparison](../../images/detection_method_comparison.png)
@@ -172,19 +163,21 @@ python 7_compare_detection_methods.py --plot  # Show 4×2 comparison
 **Purpose**: Visualize I/Q constellation diagrams
 
 - Compares baseline (stable) vs movement (dispersed) patterns
-- Shows all 64 subcarriers + selected subcarriers
+- Shows all 64 subcarriers (HT20) + selected subcarriers
 - Reveals geometric signal characteristics
 
 ```bash
-python 8_plot_constellation.py
+python 8_plot_constellation.py              # Use C6 dataset
+python 8_plot_constellation.py --chip S3    # Use S3 dataset
 python 8_plot_constellation.py --packets 1000
+python 8_plot_constellation.py --packets 200 --offset 50  # Start from packet 50
 python 8_plot_constellation.py --subcarriers 47,48,49,50
-python 8_plot_constellation.py --grid  # One subplot per subcarrier
+python 8_plot_constellation.py --grid       # One subplot per subcarrier
 ```
 
 ---
 
-### 9. ESP32 Variant Comparison (`9_compare_s3_vs_c6.py`)
+### 9. ESP32 Variant Comparison (`9_compare_chips.py`)
 
 **Purpose**: Compare CSI characteristics between ESP32 variants
 
@@ -193,29 +186,34 @@ python 8_plot_constellation.py --grid  # One subplot per subcarrier
 - Helps choose optimal hardware for specific environments
 
 ```bash
-python 9_compare_s3_vs_c6.py
-python 9_compare_s3_vs_c6.py --plot
+python 9_compare_chips.py
+python 9_compare_chips.py --plot
 ```
 
 ---
 
-### 10. NBVI Parameters Optimization (`10_optimize_nbvi_params.py`)
+### 10. ML Model Training (`10_train_ml_model.py`)
 
-**Purpose**: Grid search for optimal NBVI calibration parameters
+**Purpose**: Train, evaluate, and export the production ML model
 
-- Optimizes alpha (NBVI weighting factor), min_spacing, and percentile
-- Compares NBVI-selected band vs fixed band [11-22]
-- Generates optimal configuration for config.py
+- Trains the MLP detector with weighted binary cross-entropy
+- Default training uses `--fp-weight 2.0` and context-aware MVS-guided sample weights
+- Supports architecture experiments and feature-importance analysis
+- Exports weights for both platforms:
+  - `micro-espectre/src/ml_weights.py`
+  - `components/espectre/ml_weights.h`
 
 ```bash
-python 10_optimize_nbvi_params.py              # Full grid search
-python 10_optimize_nbvi_params.py c6           # Use only C6 data
-python 10_optimize_nbvi_params.py --quick      # Quick search (fewer combinations)
+python 10_train_ml_model.py                # Train with default settings
+python 10_train_ml_model.py --info         # Show dataset and split info
+python 10_train_ml_model.py --experiment   # Compare model architectures
+python 10_train_ml_model.py --fp-weight 2.0  # Penalize false positives 2x
+python 10_train_ml_model.py --seed-search-until-improvement 20  # Stop at first better seed
+python 10_train_ml_model.py --shap         # SHAP importance (200 samples)
+python 10_train_ml_model.py --shap 500     # SHAP importance (500 samples)
 ```
 
-**Current optimal configuration:**
-- `NBVI_ALPHA = 0.5`, `NBVI_MIN_SPACING = 1`, `NBVI_PERCENTILE = 10`, `NOISE_GATE_PERCENTILE = 25`
-- Achieves **Recall 96.4%, F1 98.2%** with zero configuration
+For full training workflow and dataset preparation, see [ML_DATA_COLLECTION.md](../ML_DATA_COLLECTION.md#5-train-model).
 
 ---
 
@@ -226,22 +224,23 @@ python 10_optimize_nbvi_params.py --quick      # Quick search (fewer combination
 ```bash
 cd tools
 
-# 1. Collect data (files saved in data/)
-cd ..
-./me run --collect-baseline
-./me run --collect-movement
-cd tools
+# 0. Collect data (files saved in data/)
+# Requires two terminals:
+#   Terminal 1: ./me stream --ip <PC_IP>
+#   Terminal 2: ./me collect --label baseline --duration 60
+#               ./me collect --label movement --duration 30
+# see ../ML_DATA_COLLECTION.md for details
 
-# 2. Analyze raw data
+# 1. Analyze raw data
 python 1_analyze_raw_data.py
 
-# 3. Optimize parameters
+# 2. Optimize parameters
 python 2_analyze_system_tuning.py --quick
 
-# 4. Visualize MVS
+# 3. Visualize MVS
 python 3_analyze_moving_variance_segmentation.py --plot
 
-# 5. Run unit tests
+# 4. Run unit tests
 cd ..
 pytest tests/ -v
 ```
@@ -252,11 +251,11 @@ pytest tests/ -v
 # Compare detection methods
 python 7_compare_detection_methods.py --plot
 
-# Plot I/Q constellations
-python 8_plot_constellation.py --packets 1000 --grid
+# Plot I/Q constellations (auto-finds most recent dataset)
+python 8_plot_constellation.py --chip S3 --packets 1000 --grid
 
-# Compare ESP32 variants
-python 9_compare_s3_vs_c6.py --plot
+# Compare ESP32 variants (auto-finds most recent datasets for available chips)
+python 9_compare_chips.py --plot
 ```
 
 ---
@@ -272,11 +271,11 @@ Tested on 60-second noisy baseline with C6 chip:
 | Low-pass 11Hz only | 92.4% | 2.34% | 88.9% |
 | **Low-pass 11Hz + Hampel (W=9, T=4)** | **92.1%** | **0.84%** | **93.2%** |
 
-### NBVI Automatic Subcarrier Selection
+### Automatic Band Selection
 
-**NBVI with `alpha=0.5`, `min_spacing=1`** achieves excellent results with zero configuration.
+**NBVI** achieves excellent results with zero configuration, automatically selecting the optimal 12 subcarriers for each environment.
 
-For complete NBVI algorithm documentation, see [ALGORITHMS.md](../ALGORITHMS.md#nbvi-automatic-subcarrier-selection).
+For complete algorithm documentation, see [ALGORITHMS.md](../ALGORITHMS.md#subcarrier-selection-nbvi).
 
 For detailed performance metrics, see [PERFORMANCE.md](../../PERFORMANCE.md).
 
@@ -284,7 +283,7 @@ For detailed performance metrics, see [PERFORMANCE.md](../../PERFORMANCE.md).
 
 ## Additional Resources
 
-- [ALGORITHMS.md](../ALGORITHMS.md) - Algorithm documentation (MVS, NBVI, Hampel)
+- [ALGORITHMS.md](../ALGORITHMS.md) - Algorithm documentation (MVS, NBVI calibration, Hampel)
 - [Micro-ESPectre](../README.md) - R&D platform documentation
 - [ESPectre](../../README.md) - Main project with Home Assistant integration
 

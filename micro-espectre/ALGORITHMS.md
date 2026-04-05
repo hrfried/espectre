@@ -9,11 +9,11 @@ Scientific documentation of the algorithms used in ESPectre for Wi-Fi CSI-based 
 - [Overview](#overview)
 - [Processing Pipeline](#processing-pipeline)
 - [Gain Lock (Hardware Stabilization)](#gain-lock-hardware-stabilization)
+- [CV Normalization (Gain-Invariant Turbulence)](#cv-normalization-gain-invariant-turbulence)
+- [Subcarrier Selection (NBVI)](#subcarrier-selection-nbvi)
+- [Signal Conditioning](#signal-conditioning)
 - [MVS: Moving Variance Segmentation](#mvs-moving-variance-segmentation)
-- [NBVI: Automatic Subcarrier Selection](#nbvi-automatic-subcarrier-selection)
-- [Low-Pass Filter](#low-pass-filter)
-- [Hampel Filter](#hampel-filter)
-- [CSI Features](#csi-features-for-ml)
+- [ML: Neural Network Detector](#ml-neural-network-detector)
 - [References](#references)
 
 ---
@@ -30,7 +30,7 @@ ESPectre uses a combination of signal processing algorithms to detect motion fro
 **What CSI Captures:**
 
 *Per-subcarrier information:*
-- **Amplitude**: Signal strength for each OFDM subcarrier (up to 64)
+- **Amplitude**: Signal strength for each OFDM subcarrier (64 for HT20 mode)
 - **Phase**: Phase shift of each subcarrier
 - **Frequency response**: How the channel affects different frequencies
 
@@ -56,14 +56,14 @@ When a person moves in an environment, they alter multipath reflections, change 
 ├───────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                   │
 │  ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌─────────────┐              │
-│  │ CSI Data │───▶│Gain Lock │───▶│ NBVI Select  │───▶│ Turbulence  │              │
-│  │ 64 subcs │    │ AGC/FFT  │    │ 12 subcs     │    │ σ(amps)     │              │
+│  │ CSI Data │───▶│Gain Lock │───▶│ Band Select  │───▶│ Turbulence  │              │
+│  │ N subcs  │    │ AGC/FFT  │    │ 12 subcs     │    │ σ/μ (CV)    │              │
 │  └──────────┘    └──────────┘    └──────────────┘    └──────┬──────┘              │
-│                  (3s, 300 pkt)    (7s, 700 pkt)             │                     │
+│                  (3s, 300 pkt)   (7.5s, 10×window)          │                     │
 │                                                             ▼                     │
 │  ┌───────────┐    ┌───────────────┐    ┌─────────────────┐  ┌──────────────────┐  │
-│  │ IDLE or   │◀───│ Threshold     │◀───│ Moving Variance │◀─│ Normalize+Filter │  │
-│  │ MOTION    │    │ Comparison    │    │ (window=50)     │  │ LowPass + Hampel │  │
+│  │ IDLE or   │◀───│ Adaptive      │◀───│ Moving Variance │◀─│ Optional Filters │  │
+│  │ MOTION    │    │ Threshold     │    │ (window=75)     │  │ LowPass + Hampel │  │
 │  └───────────┘    └───────────────┘    └─────────────────┘  └──────────────────┘  │
 │                                                                                   │
 └───────────────────────────────────────────────────────────────────────────────────┘
@@ -71,25 +71,23 @@ When a person moves in an environment, they alter multipath reflections, change 
 
 **Calibration sequence (at boot):**
 1. **Gain Lock** (3s, 300 packets): Collect AGC/FFT, lock values
-2. **NBVI Calibration** (7s, 700 packets): Select 12 optimal subcarriers, calculate baseline variance
+2. **Band Calibration** (~7.5s, 10 × window_size packets): Select 12 optimal subcarriers, calculate baseline variance
+
+With default `window_size=75`, this means 750 packets. If you change `segmentation_window_size`, the calibration buffer adjusts automatically.
 
 **Data flow per packet (after calibration):**
-1. **CSI Data**: Raw I/Q values for 64 subcarriers (128 int8 values)
+1. **CSI Data**: Raw I/Q values for 64 subcarriers (HT20 mode)
+   - Espressif format: `[Q₀, I₀, Q₁, I₁, ...]` (Imaginary first, Real second per subcarrier)
 2. **Amplitude Extraction**: `|H| = √(I² + Q²)` for selected 12 subcarriers
-3. **Spatial Turbulence**: `σ = std(amplitudes)` - variability across subcarriers
-4. **Normalization**: If baseline > 0.25, attenuate by `0.25/baseline_variance`; otherwise no scaling
-5. **Hampel Filter**: Remove outliers using MAD (optional, disabled by default)
-6. **Low-Pass Filter**: Remove high-frequency noise (Butterworth 1st order, 11 Hz cutoff)
-7. **Moving Variance**: `Var(turbulence)` over sliding window
-8. **State Machine**: Compare variance to threshold → IDLE or MOTION
+3. **Spatial Turbulence (CV)**: `CV = σ(amplitudes) / μ(amplitudes)` - gain-invariant variability
+4. **Hampel Filter** (optional): Remove outliers using MAD
+5. **Low-Pass Filter** (optional): Remove high-frequency noise (Butterworth 1st order)
+6. **Moving Variance**: `Var(turbulence)` over sliding window
+7. **Adaptive Threshold**: Compare variance to `Pxx(baseline_mv)` → IDLE or MOTION
 
 ---
 
 ## Gain Lock (Hardware Stabilization)
-
-### Overview
-
-**Gain Lock** is a hardware-level optimization that stabilizes CSI amplitude measurements by locking the ESP32's automatic gain control (AGC) and FFT scaling. This technique is based on [Espressif's esp-csi recommendations](https://github.com/espressif/esp-csi).
 
 ### The Problem
 
@@ -104,7 +102,9 @@ The ESP32 WiFi hardware includes automatic gain control (AGC) that dynamically a
 
 ### How It Works
 
-The gain lock happens in a **dedicated phase BEFORE NBVI calibration** to ensure clean data:
+**Gain Lock** stabilizes CSI amplitude measurements by locking the ESP32's AGC and FFT scaling. Based on [Espressif's esp-csi recommendations](https://github.com/espressif/esp-csi).
+
+The lock happens in a **dedicated phase BEFORE band calibration** to ensure clean data:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -113,20 +113,20 @@ The gain lock happens in a **dedicated phase BEFORE NBVI calibration** to ensure
 │                                                                      │
 │  PHASE 1: GAIN LOCK (~3 seconds, 300 packets)                        │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐              │
-│  │  Read PHY   │───▶│  Accumulate │───▶│  Calculate  │              │
-│  │  agc_gain   │    │  agc_sum    │    │  Average    │              │
-│  │  fft_gain   │    │  fft_sum    │    │             │              │
+│  │  Read PHY   │───▶│   Collect   │───▶│  Calculate  │              │
+│  │  agc_gain   │    │  agc_samples│    │   Median    │              │
+│  │  fft_gain   │    │  fft_samples│    │             │              │
 │  └─────────────┘    └─────────────┘    └──────┬──────┘              │
 │                                               │                      │
 │  Packet 300:                                  ▼                      │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  phy_fft_scale_force(true, avg_fft)                          │   │
-│  │  phy_force_rx_gain(true, avg_agc)                            │   │
+│  │  phy_fft_scale_force(true, median_fft)                       │   │
+│  │  phy_force_rx_gain(true, median_agc)                         │   │
 │  │  → AGC/FFT now LOCKED                                        │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                           │                                          │
 │                           ▼                                          │
-│  PHASE 2: NBVI CALIBRATION (~7 seconds, 700 packets)                │
+│  PHASE 2: BAND CALIBRATION (~7.5 seconds, 10 × window_size packets) │
 │  ┌──────────────────────────────────────────────────────────────┐   │
 │  │  Now all packets have stable gain!                           │   │
 │  │  → Baseline variance calculated on clean data                │   │
@@ -136,59 +136,318 @@ The gain lock happens in a **dedicated phase BEFORE NBVI calibration** to ensure
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-**Why two phases?** Separating gain lock from NBVI calibration ensures:
-- NBVI only sees data with **stable, locked gain**
+**Why two phases?** Separating gain lock from band calibration ensures:
+- Calibration only sees data with **stable, locked gain**
 - Baseline variance is **accurate** (not inflated by AGC variations)
-- Normalization works correctly (attenuates only when baseline > 0.25)
-- Total time: ~10 seconds (3s gain lock + 7s NBVI)
+- Adaptive threshold is calculated correctly
+- Total time: ~10.5 seconds (3s gain lock + 7.5s calibration)
+
+**Why median instead of mean?** Median is more robust against outliers:
+- Occasional packet with extreme gain values doesn't skew the baseline
+- Matches Espressif's internal methodology for gain calibration
 
 ### Implementation
 
 The gain lock uses undocumented PHY functions available on newer ESP32 variants:
 
 ```c
-// External PHY functions (from ESP-IDF PHY blob)
-extern void phy_fft_scale_force(bool force_en, uint8_t force_value);
+extern void phy_fft_scale_force(bool force_en, int8_t force_value);
 extern void phy_force_rx_gain(int force_en, int force_value);
 
-// Calibration logic (300 packets, ~3 seconds)
 if (packet_count < 300) {
-    agc_sum += phy_info->agc_gain;
-    fft_sum += phy_info->fft_gain;
+    agc_samples[packet_count] = phy_info->agc_gain;   // uint8_t
+    fft_samples[packet_count] = phy_info->fft_gain;   // int8_t (signed!)
 } else if (packet_count == 300) {
-    phy_fft_scale_force(true, fft_sum / 300);
-    phy_force_rx_gain(true, agc_sum / 300);
-    // Gain is now locked, trigger NBVI calibration
+    median_agc = calculate_median(agc_samples, 300);
+    median_fft = calculate_median(fft_samples, 300);
+    
+    phy_fft_scale_force(true, median_fft);
+    phy_force_rx_gain(true, median_agc);
     on_gain_locked_callback();
 }
 ```
 
-### Platform Support
-
-| Platform | Gain Lock | Notes |
-|----------|-----------|-------|
-| ESP32-S3 | Supported | Full AGC/FFT control |
-| ESP32-C3 | Supported | Full AGC/FFT control |
-| ESP32-C5 | Supported | Full AGC/FFT control |
-| ESP32-C6 | Supported | Full AGC/FFT control |
-| ESP32 (original) | Not available | PHY functions not exposed |
-| ESP32-S2 | Not available | PHY functions not exposed |
-
-On unsupported platforms, ESPectre skips the gain lock process without affecting functionality. Motion detection still works, but may have slightly higher baseline variance.
-
-### Configuration
-
-Gain lock is **always enabled** on supported platforms with no configuration required. It operates transparently during the first ~3 seconds after boot (300 packets at 100 Hz), followed by NBVI calibration (~7 seconds, 700 packets).
+On platforms without gain lock support (ESP32 Base, ESP32-S2), [CV Normalization](#cv-normalization-gain-invariant-turbulence) provides gain-invariant detection as a fallback.
 
 **Reference**: [Espressif esp-csi example](https://github.com/espressif/esp-csi/blob/master/examples/get-started/csi_recv_router/main/app_main.c)
 
 ---
 
+## CV Normalization (Gain-Invariant Turbulence)
+
+### The Concept
+
+ESPectre computes **spatial turbulence** -- a scalar that summarizes how much the CSI amplitude pattern varies across subcarriers in a single packet. The computation depends on whether gain lock is active:
+
+- **Gain locked**: Raw standard deviation is used (better sensitivity when gain is stable)
+  ```
+  turbulence = σ(amplitudes)
+  ```
+- **Gain not locked**: The **Coefficient of Variation (CV)** is used instead
+  ```
+  turbulence = σ(amplitudes) / μ(amplitudes)
+  ```
+
+### Why CV Works
+
+CV is a dimensionless ratio that is mathematically invariant to linear gain scaling:
+
+```
+CV(kA) = σ(kA) / μ(kA) = k·σ(A) / k·μ(A) = σ(A) / μ(A) = CV(A)
+```
+
+If the receiver AGC scales all amplitudes by a factor k, the CV remains unchanged. This eliminates the need for gain compensation on platforms where AGC cannot be locked.
+
+### When CV Normalization Is Used
+
+CV normalization is automatically enabled when:
+1. Gain lock mode is `disabled`
+2. Gain lock mode is `auto` and lock was skipped (e.g., signal too strong, AGC < 30)
+3. Platform does not support gain lock (ESP32 Base, ESP32-S2)
+
+**Impact on detection**: CV-normalized turbulence values are typically in the range 0.05-0.25 (compared to 2-20 for raw std). Adaptive thresholds from calibration are correspondingly smaller (order of 1e-4 to 1e-3).
+
+### Platform Support
+
+| Platform | Gain Lock | CV Normalization |
+|----------|-----------|------------------|
+| ESP32-S3 | Supported | When lock skipped |
+| ESP32-C3 | Supported | When lock skipped |
+| ESP32-C5 | Supported | When lock skipped |
+| ESP32-C6 | Supported | When lock skipped |
+| ESP32 (original) | Not available | Always enabled |
+| ESP32-S2 | Not available | Always enabled |
+
+---
+
+## Subcarrier Selection (NBVI)
+
+### The Problem
+
+WiFi CSI provides 64 subcarriers in HT20 mode, but not all are equally useful for motion detection:
+- Some are too weak (low SNR)
+- Some are too noisy (high variance even at rest)
+- Some are in guard bands or DC zones
+- Manual selection works but doesn't scale across environments
+
+ESPectre uses the **NBVI (Normalized Baseline Variability Index)** algorithm to automatically select 12 non-consecutive subcarriers that maximize motion sensitivity while minimizing false positives.
+
+![Subcarrier Analysis](../images/subcarriers_constellation_diagram.png)
+*I/Q constellation diagrams showing the geometric representation of WiFi signal propagation in the complex plane. The baseline (idle) state exhibits a stable, compact pattern, while movement introduces entropic dispersion as multipath reflections change.*
+
+### NBVI Scoring
+
+NBVI computes three complementary scores per subcarrier and evaluates four candidate bands derived from them. This multi-strategy approach improves robustness across different chip behaviors and RF environments.
+
+**Base score** (classic NBVI):
+```
+NBVI_classic = α × (σ/μ²) + (1-α) × (σ/μ)
+```
+
+Where α = 0.75 by default (energy-biased weighting).
+
+**Entropy-rewarded score** -- penalizes subcarriers with flat, low-information distributions:
+```
+NBVI_entropy = NBVI_classic / max(0.5, H)
+```
+
+Where H is the Shannon entropy of the magnitude histogram.
+
+**MAD-robust score** -- replaces std with a robust estimator (median absolute deviation) to reduce sensitivity to outlier spikes:
+```
+σ_robust = MAD × 1.4826
+NBVI_mad = α × (σ_robust/μ²) + (1-α) × (σ_robust/μ)
+```
+
+### Algorithm
+
+```python
+def nbvi_calibrate(csi_buffer, band_size=12, alpha=0.75):
+    # 1. Find quietest baseline windows (P5 of variance distribution)
+    windows = find_candidate_windows(csi_buffer, window_size=200, percentile=5)
+
+    for window in windows:
+        # 2. Calculate NBVI scores for all subcarriers
+        for subcarrier in valid_subcarriers:
+            magnitudes = extract_magnitudes(window, subcarrier)
+            mean, std, mad, entropy = compute_stats(magnitudes)
+            nbvi_classic[sc] = alpha * (std / mean**2) + (1-alpha) * (std / mean)
+            nbvi_entropy[sc] = nbvi_classic[sc] / max(0.5, entropy)
+            nbvi_mad[sc]     = alpha * (mad*1.4826 / mean**2) + (1-alpha) * (mad*1.4826 / mean)
+
+        # 3. Noise gate: exclude subcarriers below P15 mean amplitude
+        valid = noise_gate(all_metrics, percentile=15)
+
+        # 4. Generate four candidate bands from different strategies
+        band_entropy        = select_spaced(sort_by(nbvi_entropy), k=12)
+        band_mad            = select_clustered(sort_by(nbvi_mad), k=12)
+        band_classic_spaced = select_spaced(sort_by(nbvi_classic), k=12)
+        band_classic        = select_clustered(sort_by(nbvi_classic), k=12)
+
+        # 5. Validate each candidate with adaptive threshold (P95 × 1.1)
+        for band in [band_entropy, band_mad, band_classic_spaced, band_classic]:
+            fp_rate, mv_values = validate(band)
+            if fp_rate <= 0.05 or fp_rate < best_fp_rate:
+                best_band, best_fp_rate = band, fp_rate
+
+    return best_band, mv_values
+```
+
+### Selection Strategies
+
+Two complementary strategies generate candidate bands from sorted subcarrier rankings:
+
+| Strategy | Description | Tuned For |
+|----------|-------------|-----------|
+| **Strict spaced** (`select_spaced`) | All 12 subcarriers respect `min_spacing`; relaxes spacing if needed to reach 12 | Spectral diversity (ESP32, C6) |
+| **Clustered** (`select_clustered`) | Top 5 unrestricted, remaining 7 with `min_spacing` | Dense high-quality clusters (C3) |
+
+### Validation
+
+Internal validation runs MVS on the full calibration buffer and calculates the false positive rate using the same adaptive threshold that will be used at runtime (P95 × 1.1):
+
+```
+fp_rate = count(mv > threshold) / len(mv_values)
+```
+
+The band with the lowest FP rate below 5% is selected. If no candidate achieves ≤5%, the one with the lowest FP overall is used.
+
+### Hint Band Logic
+
+After selection, the calibrator optionally compares the result against a hint band (the current production default). The hint band is used only when the best candidate does not achieve ≤5% FP and the hint has a strictly better FP rate. This prevents drift to bands that minimize calibration-time FP but collapse movement recall in production.
+
+### Adaptive Threshold Calculation
+
+After band selection, NBVI returns the **moving variance values** from baseline. The adaptive threshold is then calculated as a percentile with an optional multiplier:
+
+```python
+def calculate_adaptive_threshold(mv_values, percentile, factor):
+    return calculate_percentile(mv_values, percentile) * factor
+```
+
+| Strategy | Formula | Effect |
+|----------|---------|--------|
+| Auto (default) | P95 × 1.1 | Balanced sensitivity/false positives |
+| Min | P100 × 1.0 | Maximum sensitivity (may have FP) |
+
+See [TUNING.md](../TUNING.md) for configuration options (`segmentation_threshold`).
+
+### Why Non-Consecutive Subcarriers?
+
+NBVI selects **non-consecutive** subcarriers, which provides:
+- **Spectral diversity**: Different frequency components respond differently to motion
+- **Noise resilience**: Narrowband interference typically affects adjacent subcarriers
+- **Environment adaptation**: Works well in complex multipath environments
+
+### Guard Bands and DC Zone
+
+HT20 mode (64 subcarriers) configuration:
+
+| Parameter | Value |
+|-----------|-------|
+| Total Subcarriers | 64 |
+| Guard Band Low | 11 |
+| Guard Band High | 52 |
+| DC Subcarrier | 32 |
+| Valid Subcarriers | 41 |
+
+### Default Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `alpha` | 0.75 | Weight between energy (σ/μ²) and CV (σ/μ) terms |
+| `percentile` | 5 | Percentile of window variances used to select candidate windows |
+| `noise_gate_percentile` | 15 | Percentile of subcarrier means below which subcarriers are excluded |
+| `min_spacing` | 1 | Minimum index spacing between selected subcarriers |
+| `window_size` | 200 | Packets per candidate window |
+| `window_step` | 50 | Step between windows |
+
+### Computational Complexity
+
+| Algorithm | Complexity | Notes |
+|-----------|------------|-------|
+| NBVI | O(C × S × W × N) | C = candidates, S = strategies (4), W = window size, N = subcarriers |
+
+Each candidate window generates four bands, each validated against the full calibration buffer. The dominant cost is the validation pass (O(buffer_size × band_size) per band).
+
+### Fallback Behavior
+
+When calibration cannot find valid bands (e.g., motion during calibration, insufficient data), NBVI falls back to the default band [11-22].
+
+See [PERFORMANCE.md](../PERFORMANCE.md) for detailed calibration metrics.
+
+---
+
+## Signal Conditioning
+
+Optional filters can be applied to the turbulence stream before detection. Both filters operate on the scalar turbulence value (one per CSI packet) and share the same `SegmentationContext` used by both MVS and ML detectors.
+
+### Hampel Filter
+
+**Enabled by default** (window=7, threshold=5.0 MAD).
+
+The Hampel filter removes statistical outliers using the Median Absolute Deviation (MAD) method, reducing false positives from sudden RF interference.
+
+**How it works:**
+
+1. Maintain a sliding window of recent turbulence values
+2. Calculate the median of the window
+3. Calculate MAD: `MAD = median(|xᵢ - median|)`
+4. If `|x - median| > threshold × 1.4826 × MAD`, replace with median
+
+The constant **1.4826** is the consistency constant that makes MAD a consistent estimator of standard deviation for Gaussian distributions.
+
+```python
+def hampel_filter(value, buffer, threshold=5.0):
+    buffer.append(value)
+    
+    sorted_buffer = sorted(buffer)
+    median = sorted_buffer[len(buffer) // 2]
+    
+    deviations = [abs(x - median) for x in buffer]
+    mad = sorted(deviations)[len(deviations) // 2]
+    
+    scaled_mad = 1.4826 * mad * threshold
+    if abs(value - median) > scaled_mad:
+        return median  # Replace outlier
+    return value       # Keep original
+```
+
+**Embedded optimization**: Insertion sort instead of quicksort (faster for N < 15), pre-allocated buffers (no dynamic allocation), circular buffer for O(1) insertion.
+
+**Reference**: [5] CSI-F: Feature Fusion Method (MDPI Sensors)
+
+### Low-Pass Filter
+
+**Disabled by default**. Enable with `lowpass_enabled: true`.
+
+The low-pass filter removes high-frequency noise from turbulence values using a **1st-order Butterworth IIR filter**:
+
+```python
+class LowPassFilter:
+    def __init__(self, cutoff_hz=11.0, sample_rate_hz=100.0):
+        wc = tan(π × cutoff / sample_rate)
+        k = 1.0 + wc
+        self.b0 = wc / k
+        self.a1 = (wc - 1.0) / k
+        
+        self.x_prev = 0.0
+        self.y_prev = 0.0
+    
+    def filter(self, x):
+        y = self.b0 * x + self.b0 * self.x_prev - self.a1 * self.y_prev
+        self.x_prev = x
+        self.y_prev = y
+        return y
+```
+
+**Why 11 Hz cutoff?** Human movement generates signal variations typically in the **0.5-10 Hz** range. RF noise and interference are usually **>15 Hz**. The 11 Hz cutoff preserves motion signal while removing high-frequency noise.
+
+See [TUNING.md](../TUNING.md) for filter configuration and tuning guidance.
+
+---
+
 ## MVS: Moving Variance Segmentation
-
-### Overview
-
-**MVS (Moving Variance Segmentation)** is the core motion detection algorithm. It analyzes the variance of spatial turbulence over time to distinguish between idle and motion states.
 
 ### The Insight
 
@@ -200,11 +459,9 @@ By monitoring the **variance of turbulence** over a sliding window, we can relia
 
 ### Algorithm Steps
 
-1. **Spatial Turbulence Calculation**
-   ```
-   turbulence = σ(amplitudes) = √(Σ(aᵢ - μ)² / n)
-   ```
-   Where `aᵢ` are the amplitudes of the 12 selected subcarriers.
+1. **Spatial Turbulence**
+
+   Computed per packet from the 12 selected subcarrier amplitudes. Uses raw std when gain is locked, or CV normalization otherwise (see [CV Normalization](#cv-normalization-gain-invariant-turbulence)).
 
 2. **Moving Variance (Two-Pass Algorithm)**
    ```
@@ -221,350 +478,154 @@ By monitoring the **variance of turbulence** over a sliding window, we can relia
        state = IDLE
    ```
 
-### Key Parameters
-
-| Parameter | Default | Range | Effect |
-|-----------|---------|-------|--------|
-| `threshold` | 1.0 | 0.5-10.0 | With normalization: "Nx baseline noise" |
-| `window_size` | 50 | 10-200 | Larger = smoother, slower response |
-
-**Note**: Normalization is always enabled. Threshold 1.0 means "4× baseline noise" consistently across all ESP32 variants.
-
 ### Performance
 
-📊 **For detailed performance metrics** (confusion matrix, test methodology, benchmarks), see [PERFORMANCE.md](../PERFORMANCE.md).
+For detailed performance metrics, see [PERFORMANCE.md](../PERFORMANCE.md).
 
-**Reference**: [1] MVS segmentation: the fused CSI stream and corresponding moving variance sequence (ResearchGate)
-
----
-
-## NBVI: Normalized Baseline Variability Index
-
-### Overview
-
-**NBVI (Normalized Baseline Variability Index)** is an algorithm for automatic subcarrier selection, achieving **F1=98.2%** with **zero manual configuration**. It was developed as part of ESPectre and represents a key scientific contribution.
-
-![Subcarrier Analysis](../images/subcarriers_constellation_diagram.png)
-*I/Q constellation diagrams showing the geometric representation of WiFi signal propagation in the complex plane. The baseline (idle) state exhibits a stable, compact pattern, while movement introduces entropic 
-dispersion as multipath reflections change.*
-
-### The Problem
-
-WiFi CSI provides 64 subcarriers, but not all are equally useful for motion detection:
-- Some are too weak (low SNR)
-- Some are too noisy (high variance even at rest)
-- Some are redundant (correlated with neighbors)
-- Manual selection works (F1=97.3%) but doesn't scale across environments
-
-**Challenge**: Find an automatic, calibration-free method that adapts to any environment.
-
-### The Solution: NBVI Formula
-
-```
-NBVI = α × (σ/μ²) + (1-α) × (σ/μ)
-```
-
-**Default: α = 0.5**
-
-**Components**:
-- **σ/μ²** (Energy normalization): Penalizes weak subcarriers (small μ)
-- **σ/μ** (Coefficient of Variation): Rewards stability (small σ relative to μ)
-- **α = 0.5**: Balanced weighting between signal strength and stability
-
-**Interpretation**: Lower NBVI = Better subcarrier (strong + stable signal)
-
-### Geometric Insight
-
-From I/Q constellation analysis:
-
-| State | Radius (μ) | Ring Width (σ) | Pattern |
-|-------|------------|----------------|---------|
-| **Baseline (Idle)** | Large | Thin | Compact circle - strong, stable |
-| **Movement** | Small | Thick | Scattered - weak, dispersed |
-
-Optimal subcarriers show **maximum contrast** between these states.
-
-### Algorithm Components
-
-#### 1. Percentile-Based Baseline Detection
-
-Instead of using fixed thresholds, NBVI uses percentile analysis to find the quietest windows automatically:
-
-```python
-# Analyze sliding windows (skip first 300 packets used for gain lock)
-for window in sliding_windows(buffer[300:], size=200, step=50):
-    variances.append(calculate_variance(window))
-
-# Find quietest windows (adaptive threshold)
-p10_threshold = np.percentile(variances, 10)
-candidate_windows = [w for w in windows if variance <= p10_threshold]
-
-# Validate each candidate and select with minimum FP rate
-best_window = min(candidate_windows, key=lambda w: validate_fp_rate(w))
-```
-
-**Advantages**:
-- Multi-window validation ensures selected subcarriers produce stable detection
-- Adapts to any environment automatically
-- Zero configuration required
-
-#### 2. Noise Gate
-
-**Problem**: Weak subcarriers appear stable (low σ) but have low SNR.
-
-**Solution**: Exclude subcarriers below 25th percentile of mean magnitude.
-
-```python
-magnitude_threshold = np.percentile(mean_magnitudes, 25)
-valid_subcarriers = [i for i in range(64) if mean[i] > magnitude_threshold]
-```
-
-**Reference**: [4] Passive Indoor Localization - SNR considerations and noise gate strategies
-
-#### 3. Spectral De-correlation
-
-**Problem**: Adjacent subcarriers are correlated due to OFDM mechanism.
-
-**Solution**: Hybrid spacing strategy with minimum spacing Δf≥1:
-- **Top 5**: Always include (absolute priority by NBVI score)
-- **Remaining 7**: Select with minimum spacing constraint
-
-**Default: min_spacing = 1** (adjacent subcarriers allowed)
-
-This allows selecting adjacent subcarriers when they have good NBVI scores, maximizing the use of high-quality subcarriers in the stable central band.
-
-**Reference**: [5] Subcarrier Selection for Indoor Localization - Spectral de-correlation and feature diversity
-
-### Complete Algorithm
-
-```python
-def nbvi_calibrate(csi_buffer, num_subcarriers=12):
-    # 1. Collect baseline data (700 packets, ~7s @ 100Hz)
-    #    Skip first 300 packets (used for gain lock)
-    magnitudes = calculate_magnitudes(csi_buffer[300:])
-    
-    # 2. Find candidate windows using percentile threshold
-    window_variances = [var(window) for window in sliding_windows(magnitudes, 200, 50)]
-    p10 = percentile(window_variances, 10)
-    candidates = [w for w in windows if variance(w) <= p10]
-    
-    # 3. Validate each candidate and select with minimum FP rate
-    best_window = min(candidates, key=lambda w: validate_fp_rate(w))
-    
-    # 4. Calculate NBVI for all 64 subcarriers (α=0.5)
-    for i in range(64):
-        mean = np.mean(best_window[:, i])
-        std = np.std(best_window[:, i])
-        nbvi[i] = 0.5 * (std / mean**2) + 0.5 * (std / mean)
-    
-    # 5. Apply noise gate (exclude weak subcarriers, 25th percentile)
-    threshold = percentile(means, 25)
-    valid = [i for i in range(64) if means[i] > threshold]
-    
-    # 6. Select with spacing
-    selected = []
-    sorted_by_nbvi = sorted(valid, key=lambda i: nbvi[i])
-    
-    # Top 5 always included
-    selected = sorted_by_nbvi[:5]
-    
-    # Remaining 7 with spacing >= 1 (adjacent allowed)
-    for candidate in sorted_by_nbvi[5:]:
-        if all(abs(candidate - s) >= 1 for s in selected):
-            selected.append(candidate)
-        if len(selected) == 12:
-            break
-    
-    return sorted(selected)
-```
-
-### Fallback Behavior
-
-When NBVI calibration cannot find valid subcarriers (e.g., poor signal quality, high noise environment), a fallback mechanism ensures motion detection remains functional:
-
-1. **Default subcarriers used**: The system falls back to the default band [11-22]
-2. **Normalization still calculated**: Baseline variance is computed using the first candidate window
-3. **Motion detection works**: With proper normalization, even default subcarriers provide usable detection
-
-This fallback ensures ESPectre remains operational even in challenging WiFi environments where optimal subcarrier selection fails.
-
-### Configuration
-
-```python
-# Python (Micro-ESPectre)
-NBVICalibrator(
-    buffer_size=700,             # 7s @ 100Hz (after 3s gain lock)
-    window_size=200,             # 2s sliding window for baseline detection
-    percentile=10,               # 10th percentile for quietest window selection
-    noise_gate_percentile=25,    # 25th percentile for noise gate
-    alpha=0.5,                   # NBVI weighting factor (balanced)
-    min_spacing=1                # Minimum subcarrier spacing (adjacent allowed)
-)
-```
-
-### NBVI Parameters
-
-| Parameter | Default | Range | Effect |
-|-----------|---------|-------|--------|
-| `buffer_size` | 700 | 500-1000 | Packets for calibration (~7s at 100Hz) |
-| `window_size` | 200 | 100-300 | Sliding window for baseline detection (2s @ 100Hz) |
-| `percentile` | 10 | 5-20 | Percentile for quietest window selection |
-| `noise_gate_percentile` | 25 | 10-50 | Percentile for excluding weak subcarriers |
-| `alpha` | 0.5 | 0.0-1.0 | Higher = more weight on signal strength |
-| `min_spacing` | 1 | 1-3 | Minimum gap between subcarriers (1=adjacent OK) |
-
-**Tuning notes:**
-- **alpha = 0.5**: Balanced between signal strength (σ/μ²) and stability (σ/μ)
-- **noise_gate_percentile = 25**: Excludes the weakest 25% of subcarriers by signal strength
-- **min_spacing = 1**: Allows adjacent subcarriers, maximizing quality selection
-- These defaults work well for most environments; rarely need adjustment
+**Reference**: [2] MVS segmentation: the fused CSI stream and corresponding moving variance sequence
 
 ---
 
-## Low-Pass Filter
+## ML: Neural Network Detector
 
-### Overview
+### The Insight
 
-The **Low-Pass Filter** removes high-frequency noise from turbulence values. This is particularly useful in noisy RF environments where NBVI may select subcarriers susceptible to interference.
+Motion detection can be framed as a **binary classification problem**:
+- **Input**: Statistical features computed from a sliding window of turbulence values
+- **Output**: Probability of motion (0.0 to 1.0)
 
-> ℹ️ **Default: Disabled** - The low-pass filter is disabled by default for simplicity. Enable it (11 Hz cutoff recommended) if you experience false positives in noisy RF environments.
+A neural network can learn complex, non-linear patterns that may be missed by simple threshold-based methods. Unlike MVS, ML learns decision boundaries from labeled training data and generalizes across environments without per-environment calibration.
 
-### How It Works
+### Architecture
 
-The filter uses a **1st-order Butterworth IIR filter** implemented for real-time processing:
+The ML detector uses a compact **Multi-Layer Perceptron (MLP)**:
 
-1. **Bilinear transform** to convert analog filter to digital
-2. **Difference equation**: `y[n] = b₀·x[n] + b₀·x[n-1] - a₁·y[n-1]`
-3. **Single sample latency** for real-time processing
-
-### Algorithm
-
-```python
-class LowPassFilter:
-    def __init__(self, cutoff_hz=11.0, sample_rate_hz=100.0):
-        # Bilinear transform
-        wc = tan(π × cutoff / sample_rate)
-        k = 1.0 + wc
-        self.b0 = wc / k
-        self.a1 = (wc - 1.0) / k
-        
-        self.x_prev = 0.0
-        self.y_prev = 0.0
-    
-    def filter(self, x):
-        y = self.b0 * x + self.b0 * self.x_prev - self.a1 * self.y_prev
-        self.x_prev = x
-        self.y_prev = y
-        return y
+```
+Input (12 features)
+    ↓
+Dense(16, ReLU)      ← 12×16 + 16 = 208 parameters
+    ↓
+Dense(8, ReLU)       ← 16×8 + 8 = 136 parameters
+    ↓
+Dense(1, Sigmoid)    ← 8×1 + 1 = 9 parameters
+    ↓
+Output (probability)
 ```
 
-### Parameters
+**Total**: ~350 parameters, ~2 KB (constexpr float weights)
 
-| Parameter | Default | Range | Effect |
-|-----------|---------|-------|--------|
-| `lowpass_enabled` | false | - | Enable/disable filter |
-| `lowpass_cutoff` | 11.0 | 5-20 Hz | Lower = more smoothing, slower response |
+The 12→16→8→1 architecture was validated as optimal through architecture search on 21,665 samples (5-fold CV):
 
-### Why 11 Hz Cutoff
+| Architecture | F1 (CV) | FP Rate | Params | Weights |
+|---|---|---|---|---|
+| **12→16→8→1** | **99.6% +/- 0.2%** | 0.5% | 353 | 1.4 KB |
+| 12→24→12→1 | 99.8% +/- 0.2% | 0.3% | 625 | 2.4 KB |
+| 12→24→1 | 99.7% +/- 0.2% | 0.5% | 337 | 1.3 KB |
+| 12→12→8→4→1 | 99.6% +/- 0.1% | 0.6% | 301 | 1.2 KB |
+| 12→8→1 | 99.2% +/- 0.2% | 1.2% | 113 | 0.4 KB |
 
-Human movement generates signal variations typically in the **0.5-10 Hz** range. RF noise and interference are usually **>15 Hz**. The 11 Hz cutoff:
-- **Preserves** motion signal (>90% recall)
-- **Removes** high-frequency noise
-- **Reduces** false positives in noisy environments
+The best candidate (24-12) gains only +0.1% F1 at the cost of nearly doubling parameters and flash footprint. The 16-8 architecture offers the best balance of accuracy, size, and FP rate for embedded deployment.
 
-### Performance (60s noisy baseline)
+### Inference Pipeline
 
-| Configuration | Recall | FP Rate | F1 Score |
-|---------------|--------|---------|----------|
-| No filter | 98.3% | 51.2% | N/A |
-| Low-pass 11 Hz | **92.4%** | **2.34%** | **88.9%** |
-| Low-pass 11 Hz + Hampel | **92.1%** | **0.84%** | **93.2%** |
-
----
-
-## Hampel Filter
-
-### Overview
-
-The **Hampel filter** removes statistical outliers using the Median Absolute Deviation (MAD) method. It can be applied to turbulence values before MVS calculation to reduce false positives from sudden interference.
-
-> ⚠️ **Default: Disabled** - The Hampel filter is disabled by default because MVS already provides robust motion detection with 0% false positives in typical environments. Enabling it reduces Recall from 98.1% to 96.3%. Only enable in environments with high electromagnetic interference causing sudden spikes (e.g., industrial settings, proximity to microwave ovens or multiple WiFi access points).
-
-### How It Works
-
-1. **Maintain sliding window** of recent turbulence values
-2. **Calculate median** of the window
-3. **Calculate MAD**: `MAD = median(|xᵢ - median|)`
-4. **Detect outliers**: If `|x - median| > threshold × 1.4826 × MAD`, replace with median
-
-The constant **1.4826** is the consistency constant for Gaussian distributions.
-
-### Algorithm
-
-```python
-def hampel_filter(value, buffer, threshold=4.0):
-    # Add to circular buffer
-    buffer.append(value)
-    
-    # Calculate median
-    sorted_buffer = sorted(buffer)
-    median = sorted_buffer[len(buffer) // 2]
-    
-    # Calculate MAD
-    deviations = [abs(x - median) for x in buffer]
-    mad = sorted(deviations)[len(deviations) // 2]
-    
-    # Check if outlier
-    scaled_mad = 1.4826 * mad * threshold
-    if abs(value - median) > scaled_mad:
-        return median  # Replace outlier
-    return value       # Keep original
+```
+┌──────────────┐    ┌──────────────┐    ┌───────────────────┐    ┌──────────────┐
+│ CSI Packet   │───▶│ Turbulence   │───▶│ Optional Filters  │───▶│ Buffer (75)  │
+│              │    │ σ/μ (CV)     │    │ Hampel + LowPass  │    │              │
+└──────────────┘    └──────────────┘    └───────────────────┘    └──────┬───────┘
+                                                                        │
+                                                                        ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│ IDLE/MOTION  │◀───│ Threshold    │◀───│ Probability  │◀───│ 12 Features  │
+│              │    │ > 0.5        │    │ [0.0-1.0]    │    │ → Neural Net │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
 ```
 
-### Implementation Optimization
+### Calibration
 
-For embedded systems, the implementation uses:
-- **Insertion sort** instead of quicksort (faster for N < 15)
-- **Pre-allocated buffers** (no dynamic allocation)
-- **Circular buffer** for O(1) insertion
+ML uses **fixed subcarriers** -- no band calibration needed:
 
-### Parameters
+| Algorithm | Subcarrier Selection | Threshold | Boot Time |
+|-----------|---------------------|-----------|-----------|
+| MVS | NBVI (~7.5s) | Adaptive (percentile-based) | ~10.5s |
+| ML | **Fixed** (12 even, DC excluded) | Fixed (0.5 probability) | **~3s** |
 
-| Parameter | Default | Range | Effect |
-|-----------|---------|-------|--------|
-| `hampel_enabled` | false | - | Enable/disable filter |
-| `hampel_window` | 7 | 3-11 | Larger = more context, slower |
-| `hampel_threshold` | 4.0 | 1.0-10.0 | Lower = more aggressive filtering |
+ML uses 12 fixed subcarriers selected to avoid DC and improve stability: `[12, 14, 16, 18, 20, 24, 28, 36, 40, 44, 48, 52]`. This eliminates the 7.5-second band calibration phase, reducing boot time to ~3 seconds (gain lock only).
 
-### Why Disabled by Default
+### Features
 
-Testing showed that in clean environments:
-- **Without Hampel**: 98.1% Recall, 0% FP
-- **With Hampel**: 96.3% Recall, 0% FP
+The ML detector extracts **12 non-redundant statistical features** from a sliding window of 75 turbulence values (configured via `segmentation_window_size`).
 
-The filter reduces recall because it treats the first packets of real movement as "outliers" and replaces them with the baseline median, delaying detection.
+**Design principles:**
+- No redundant features (e.g., no variance alongside std, no range alongside max/min)
+- 12 turbulence-window features (11 statistical + 1 temporal-variation)
+- MicroPython compatible: pure Python implementation without numpy at runtime
 
-**Reference**: [6] CSI-F: Feature Fusion Method (MDPI Sensors)
+| # | Feature | Formula | Description |
+|---|---------|---------|-------------|
+| 0 | `turb_mean` | μ = Σxᵢ/n | Mean turbulence (central tendency) |
+| 1 | `turb_std` | σ = √(Σ(xᵢ-μ)²/n) | Standard deviation (spread) |
+| 2 | `turb_max` | max(xᵢ) | Maximum value in window |
+| 3 | `turb_min` | min(xᵢ) | Minimum value in window |
+| 4 | `turb_zcr` | crossings / (n-1) | Zero-crossing rate around mean |
+| 5 | `turb_skewness` | E[(X-μ)³]/σ³ | Turbulence asymmetry (3rd moment) |
+| 6 | `turb_kurtosis` | E[(X-μ)⁴]/σ⁴ - 3 | Turbulence tailedness (4th moment) |
+| 7 | `turb_entropy` | -Σpᵢ log₂(pᵢ) | Shannon entropy (randomness) |
+| 8 | `turb_autocorr` | C(1)/C(0) | Lag-1 autocorrelation |
+| 9 | `turb_mad` | median(\|xᵢ - median(x)\|) | Median absolute deviation |
+| 10 | `turb_slope` | Linear regression | Temporal trend |
+| 11 | `waveform_length` | Σ\|xᵢ - xᵢ₋₁\| | Total temporal variation |
 
----
+#### Feature Categories
 
-## CSI Features (for ML)
+**Basic Statistics (0-3)**: Standard statistical measures of the turbulence buffer.
 
-ESPectre extracts statistical features from CSI data for future machine learning applications (planned for v3.x).
+**Signal Dynamics (4)**:
+- **Zero-crossing rate**: Fraction of consecutive samples crossing the mean. High ZCR indicates rapid oscillations (motion), low ZCR indicates stable signal (idle).
 
-### Available Features
+**Higher-Order Moments (5-6)**: Computed from the turbulence buffer (75 samples) for stable estimates.
+- **Skewness**: Asymmetry of turbulence distribution. Motion typically increases skewness.
+- **Kurtosis**: "Tailedness" of turbulence distribution. Motion produces heavier tails.
 
-| Feature | Fisher J | Source | Description |
-|---------|----------|--------|-------------|
-| `iqr_turb` | 3.56 | Turbulence buffer | Interquartile range approximation |
-| `skewness` | 2.54 | Current packet | Distribution asymmetry |
-| `kurtosis` | 2.24 | Current packet | Distribution tailedness |
-| `entropy_turb` | 2.08 | Turbulence buffer | Shannon entropy |
-| `variance_turb` | 1.21 | Turbulence buffer | Moving variance (from MVS) |
+**Robust Statistics (7, 9)**:
+- **Entropy**: High during motion (unpredictable), low during idle (stable)
+- **MAD**: Robust alternative to std, less sensitive to outliers
 
-**Fisher's Criterion (J)**: Measures class separability. Higher J = better feature for distinguishing idle vs motion.
+**Temporal Structure (8, 10)**:
+- **Autocorrelation**: Lag-1 temporal correlation. High during idle (smooth signal), low during motion (turbulent)
+- **Slope**: Positive = increasing turbulence, negative = decreasing
 
-### Feature Definitions
+**Temporal Variation (11)**:
+- **Waveform Length**: Sum of absolute first differences over the turbulence window. Higher values indicate faster/more irregular short-term motion dynamics.
+
+#### Feature Importance
+
+SHAP and correlation can diverge significantly: correlation captures linear association with the label, while SHAP captures non-linear contribution inside the network.
+
+Updated values from `10_train_ml_model.py` (`--correlation` and `--shap`):
+
+| Rank (SHAP) | Feature | SHAP | Contribution | Corr |
+|-------------|---------|------|--------------|------|
+| 1 | `turb_autocorr` | 0.279470 | 39.3% | +0.9003 |
+| 2 | `turb_entropy` | 0.064995 | 9.1% | +0.1978 |
+| 3 | `turb_min` | 0.064498 | 9.1% | -0.5491 |
+| 4 | `turb_zcr` | 0.055212 | 7.8% | -0.8672 |
+| 5 | `waveform_length` | 0.050079 | 7.0% | +0.3834 |
+| 6 | `turb_kurtosis` | 0.049813 | 7.0% | -0.1761 |
+| 7 | `turb_std` | 0.047222 | 6.6% | +0.5847 |
+| 8 | `turb_mean` | 0.039395 | 5.5% | -0.2334 |
+| 9 | `turb_mad` | 0.021467 | 3.0% | +0.5704 |
+| 10 | `turb_slope` | 0.018362 | 2.6% | -0.0012 |
+| 11 | `turb_skewness` | 0.010923 | 1.5% | +0.3252 |
+| 12 | `turb_max` | 0.009818 | 1.4% | +0.1758 |
+
+#### Feature Definitions
+
+**Zero-Crossing Rate**:
+```
+ZCR = count(sign(x[i] - μ) ≠ sign(x[i-1] - μ)) / (n - 1)
+```
+Counts how often the signal crosses the mean value. Ranges from 0.0 (monotonic) to 1.0 (alternating every sample).
 
 **Skewness** (third standardized moment):
 ```
@@ -574,7 +635,7 @@ ESPectre extracts statistical features from CSI data for future machine learning
 - γ₁ < 0: Left-skewed (tail on left)
 - γ₁ = 0: Symmetric
 
-**Kurtosis** (fourth standardized moment):
+**Kurtosis** (fourth standardized moment, excess):
 ```
 γ₂ = E[(X - μ)⁴] / σ⁴ - 3
 ```
@@ -586,51 +647,84 @@ ESPectre extracts statistical features from CSI data for future machine learning
 ```
 H = -Σ pᵢ × log₂(pᵢ)
 ```
-Measures uncertainty/randomness in the turbulence distribution.
+Computed by binning turbulence values (10 bins) and calculating the entropy of the histogram. Higher entropy indicates more randomness/unpredictability.
+
+**Lag-1 Autocorrelation**:
+```
+r₁ = (1/(n-1)) Σ(xᵢ - μ)(xᵢ₊₁ - μ) / σ²
+```
+Measures temporal correlation between consecutive values. Ranges from -1.0 to 1.0. Smooth signals have high positive autocorrelation; turbulent signals have low autocorrelation.
+
+**Median Absolute Deviation**:
+```
+MAD = median(|xᵢ - median(x)|)
+```
+Robust measure of spread. Unlike std, a single outlier cannot dramatically inflate the MAD. Computed using insertion sort (efficient for n=75 on ESP32).
+
+**Linear Regression Slope**:
+```
+slope = Σ(iᵢ - ī)(xᵢ - x̄) / Σ(iᵢ - ī)²
+```
+Where i = time index, x = turbulence value. Positive slope indicates increasing motion intensity.
+
+**Waveform Length**:
+```
+WL = Σ |xᵢ - xᵢ₋₁|,  i = 1..n-1
+```
+Measures total temporal variation in the turbulence window. Compared to slope/autocorrelation, it is more sensitive to short, bursty oscillations and does not require logarithms or histogram binning.
+
+### Training
+
+For the complete training workflow (data collection, training commands, export formats), see [ML_DATA_COLLECTION.md](ML_DATA_COLLECTION.md).
+
+The training pipeline includes:
+
+- **Chip-grouped cross-validation**: Uses `StratifiedGroupKFold` with chip type as group, so each fold's validation set contains chips not seen during training for that fold. This prevents inflated CV metrics from chip-level data leakage and ensures worst-chip recall is tracked during development.
+- **Hard-positive sample weighting**: Movement samples near the MVS detection threshold (subtle motion) receive higher training weight, while easy positives receive lower weight. This focuses the model on the boundary cases where recall drops in deployment.
+- **Stratified validation split**: The internal early-stopping validation set uses explicit stratified splitting rather than Keras's default sequential split, preventing chip imbalance in the validation data.
+- **Early stopping and LR scheduling**: Patience-based early stopping with best-weight restoration and reduce-on-plateau learning rate scheduler.
+- **Dropout regularization**: Applied between hidden layers during training (automatically disabled at inference).
+
+### Performance
+
+ML achieves higher recall than MVS with a small tradeoff in precision. ML's strength is **generalization** -- it performs well across different environments without per-environment calibration.
+
+See [PERFORMANCE.md](../PERFORMANCE.md) for detailed per-chip results and [TUNING.md](../TUNING.md) for configuration and tuning guidance.
 
 ---
 
 ## References
 
-### Primary Sources
-
-1. **MVS Segmentation** - ResearchGate  
-   The fused CSI stream and corresponding moving variance sequence.  
-   📄 [Read paper](https://www.researchgate.net/figure/MVS-segmentation-a-the-fused-CSI-stream-b-corresponding-moving-variance-sequence_fig6_326244454)
-
-2. **Indoor Motion Detection Using Wi-Fi CSI (2018)** - PMC  
-   False positive reduction and sensitivity optimization.  
-   📄 [Read paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC6068568/)
-
-3. **WiFi Motion Detection: Efficacy and Performance (2019)** - arXiv  
-   Signal processing methods for motion detection.  
-   📄 [Read paper](https://arxiv.org/abs/1908.08476)
-
-### Algorithm-Specific References
-
-4. **Passive Indoor Localization** - PMC  
-   SNR considerations and noise gate strategies.  
-   📄 [Read paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC6412876/)
-
-5. **Subcarrier Selection for Indoor Localization** - ResearchGate  
+1. **Subcarrier selection for efficient CSI-based indoor localization (2018)**  
    Spectral de-correlation and feature diversity.  
-   📄 [Read paper](https://www.researchgate.net/publication/326195991)
+   [Read paper](https://www.researchgate.net/publication/326195991)
 
-6. **CSI-F: Feature Fusion Method** - MDPI Sensors  
+2. **Indoor Motion Detection Using Wi-Fi Channel State Information in Flat Floor Environments Versus in Staircase Environments (2018)** 
+   Moving variance segmentation.  
+   [Read paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC6068568/)
+
+3. **WiFi Motion Detection: A Study into Efficacy and Classification (2019)**
+   Signal processing methods for motion detection.  
+   [Read paper](https://arxiv.org/abs/1908.08476)
+
+4. **A Novel Passive Indoor Localization Method by Fusion CSI Amplitude and Phase Information (2019)**
+   SNR considerations and noise gate strategies.  
+   [Read paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC6412876/)
+
+5. **CSI-F: A Human Motion Recognition Method Based on Channel-State-Information Signal Feature Fusion (2024)**
    Hampel filter and statistical robustness.  
-   📄 [Read paper](https://www.mdpi.com/1424-8220/24/3/862)
+   [Read paper](https://www.mdpi.com/1424-8220/24/3/862)
 
-7. **Linear-Complexity Subcarrier Selection** - ResearchGate  
+6. **Linear-Complexity Subcarrier Selection Strategy for Fast Preprocessing of CSI in Passive Wi-Fi Sensing Classification Tasks (2025)** 
    Computational efficiency for embedded systems.  
-   📄 [Read paper](https://www.researchgate.net/publication/397240630)
+   [Read paper](https://www.researchgate.net/publication/397240630)
 
-8. **CIRSense: Rethinking WiFi Sensing** - arXiv  
+7. **CIRSense: Rethinking WiFi Sensing with Channel Impulse Response (2025)**  
    SSNR (Sensing Signal-to-Noise Ratio) optimization.  
-   📄 [Read paper](https://arxiv.org/html/2510.11374v1)
+   [Read paper](https://arxiv.org/html/2510.11374v1)
 
 ---
 
 ## License
 
 GPLv3 - See [LICENSE](../LICENSE) for details.
-

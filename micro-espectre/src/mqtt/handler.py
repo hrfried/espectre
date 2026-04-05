@@ -16,23 +16,23 @@ from src.mqtt.commands import MQTTCommands
 class MQTTHandler:
     """MQTT handler with publishing and command support"""
     
-    def __init__(self, config, segmentation, wlan, traffic_generator=None, nbvi_calibration_func=None, global_state=None):
+    def __init__(self, config, detector, wlan, traffic_generator=None, band_calibration_func=None, global_state=None):
         """
         Initialize MQTT handler
         
         Args:
             config: Configuration module
-            segmentation: SegmentationContext instance
+            detector: IDetector instance (MVSDetector or MLDetector)
             wlan: WLAN instance
             traffic_generator: TrafficGenerator instance (optional)
-            nbvi_calibration_func: Function to run NBVI calibration (optional)
+            band_calibration_func: Function to run band calibration (optional)
             global_state: GlobalState instance for accessing loop metrics (optional)
         """
         self.config = config
-        self.seg = segmentation
+        self.detector = detector
         self.wlan = wlan
         self.traffic_gen = traffic_generator
-        self.nbvi_calibration_func = nbvi_calibration_func
+        self.band_calibration_func = band_calibration_func
         self.global_state = global_state
         self.client = None
         self.cmd_handler = None
@@ -64,11 +64,11 @@ class MQTTHandler:
         self.cmd_handler = MQTTCommands(
             self.client,
             self.config,
-            self.seg,
+            self.detector,
             self.response_topic,
             self.wlan,
             self.traffic_gen,
-            self.nbvi_calibration_func,
+            self.band_calibration_func,
             self.global_state
         )
         
@@ -101,22 +101,18 @@ class MQTTHandler:
             print(f"Error checking MQTT messages: {e}")
     
     def publish_state(self, current_variance, current_state, current_threshold, 
-                     packet_delta, dropped_delta, pps, features=None, confidence=None, triggered=None):
+                     packet_delta, dropped_delta, pps):
         """
         Publish current state to MQTT
         
         Args:
-            current_variance: Current moving variance
+            current_variance: Current moving variance (or probability for ML)
             current_state: Current state (0=IDLE, 1=MOTION)
             current_threshold: Current threshold
             packet_delta: Packets processed since last publish
             dropped_delta: Packets dropped since last publish
-            pps: Packets per second (calculated server-side with ms precision)
-            features: Optional dict of CSI features
-            confidence: Optional confidence score (0-1) from multi-feature detector
-            triggered: Optional list of triggered feature names
+            pps: Packets per second
         """
-        # Convert state to string format (matching C version)
         state_str = 'motion' if current_state == 1 else 'idle'
         
         payload = {
@@ -128,26 +124,6 @@ class MQTTHandler:
             'pps': pps,
             'timestamp': time.time()
         }
-        
-        # Add CSI features if available (publish-time features)
-        if features is not None:
-            payload['features'] = {
-                # Turbulence buffer features
-                'entropy_turb': round(features.get('entropy_turb', 0), 3),
-                'iqr_turb': round(features.get('iqr_turb', 0), 3),
-                'variance_turb': round(features.get('variance_turb', 0), 3),
-                # W=1 features (current packet)
-                'skewness': round(features.get('skewness', 0), 3),
-                'kurtosis': round(features.get('kurtosis', 0), 3)
-            }
-            
-            # Add confidence score if available
-            if confidence is not None:
-                payload['confidence'] = round(confidence, 3)
-            
-            # Add triggered features if available
-            if triggered is not None:
-                payload['triggered'] = triggered
         
         try:
             self.client.publish(self.base_topic, json.dumps(payload))

@@ -2,329 +2,239 @@
 Micro-ESPectre - CSI Feature Extraction (Publish-Time)
 
 Pure Python implementation for MicroPython.
-Features are calculated ONLY at publish time, using:
-  - W=1 features: skewness, kurtosis (from current packet amplitudes)
-  - Turbulence buffer features: variance_turb, iqr_turb, entropy_turb
+Extracts statistical features from turbulence buffer and subcarrier amplitudes
+for ML-based motion detection.
 
-This approach:
-  - No separate amplitude buffer needed (saves 92% memory)
-  - Features synchronized with MVS state (no lag)
-  - No background thread required
-
-Top 5 features by Fisher's Criterion (tested with SEG_WINDOW_SIZE=50):
-  - iqr_turb (J=3.56): IQR approximation of turbulence buffer
-  - skewness (J=2.54): Distribution asymmetry (W=1)
-  - kurtosis (J=2.24): Distribution tailedness (W=1)
-  - entropy_turb (J=2.08): Shannon entropy of turbulence buffer
-  - variance_turb (J=1.21): Moving variance (already calculated by MVS!)
+This module intentionally exposes only the features used by the motion
+training pipeline and on-device inference.
 
 Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3
 """
 import math
 
+try:
+    from src.utils import insertion_sort
+except ImportError:
+    from utils import insertion_sort
 
-# ============================================================================
-# W=1 Features (Current Packet Amplitudes)
-# ============================================================================
 
-def calc_skewness(amplitudes):
-    """
-    Calculate Fisher's skewness (third standardized moment).
-    
-    Skewness measures asymmetry of the distribution:
-    - γ₁ > 0: Right-skewed (tail on right)
-    - γ₁ < 0: Left-skewed (tail on left)
-    - γ₁ = 0: Symmetric
-    
-    Args:
-        amplitudes: List of amplitudes from current packet
-    
-    Returns:
-        float: Skewness coefficient
-    """
-    n = len(amplitudes)
-    if n < 3:
+def calc_skewness(values, count, mean, std):
+    """Calculate Fisher skewness (3rd standardized moment)."""
+    if count < 3 or std < 1e-10:
         return 0.0
-    
-    # Calculate mean
-    mean = sum(amplitudes) / n
-    
-    # Calculate variance and std
-    variance = sum((x - mean) ** 2 for x in amplitudes) / n
-    std = math.sqrt(variance) if variance > 0 else 0
-    
-    if std < 1e-10:
+
+    m3 = 0.0
+    for i in range(count):
+        diff = values[i] - mean
+        m3 += diff * diff * diff
+    m3 /= count
+    return m3 / (std * std * std)
+
+
+def calc_kurtosis(values, count, mean, std):
+    """Calculate excess kurtosis (4th standardized moment - 3)."""
+    if count < 4 or std < 1e-10:
         return 0.0
-    
-    # Third central moment
-    m3 = sum((x - mean) ** 3 for x in amplitudes) / n
-    
-    return m3 / (std ** 3)
 
+    m4 = 0.0
+    for i in range(count):
+        diff = values[i] - mean
+        diff2 = diff * diff
+        m4 += diff2 * diff2
+    m4 /= count
 
-def calc_kurtosis(amplitudes):
-    """
-    Calculate Fisher's excess kurtosis (fourth standardized moment - 3).
-    
-    Kurtosis measures "tailedness" of the distribution:
-    - γ₂ > 0: Leptokurtic (heavy tails, sharp peak)
-    - γ₂ < 0: Platykurtic (light tails, flat peak)
-    - γ₂ = 0: Mesokurtic (normal distribution)
-    
-    Args:
-        amplitudes: List of amplitudes from current packet
-    
-    Returns:
-        float: Excess kurtosis coefficient
-    """
-    n = len(amplitudes)
-    if n < 4:
-        return 0.0
-    
-    # Calculate mean
-    mean = sum(amplitudes) / n
-    
-    # Calculate variance and std
-    variance = sum((x - mean) ** 2 for x in amplitudes) / n
-    std = math.sqrt(variance) if variance > 0 else 0
-    
-    if std < 1e-10:
-        return 0.0
-    
-    # Fourth central moment
-    m4 = sum((x - mean) ** 4 for x in amplitudes) / n
-    
-    # Excess kurtosis (subtract 3 for normal distribution baseline)
-    return (m4 / (std ** 4)) - 3.0
-
-
-# ============================================================================
-# Turbulence Buffer Features
-# ============================================================================
-
-def calc_iqr_turb(turbulence_buffer, buffer_count):
-    """
-    Calculate IQR approximation using range (max - min) * 0.5.
-    
-    Args:
-        turbulence_buffer: Circular buffer of turbulence values
-        buffer_count: Number of valid values in buffer
-    
-    Returns:
-        float: IQR approximation
-    """
-    if buffer_count < 2:
-        return 0.0
-    
-    # Find min/max in buffer
-    min_val = turbulence_buffer[0]
-    max_val = turbulence_buffer[0]
-    
-    for i in range(1, buffer_count):
-        val = turbulence_buffer[i]
-        if val < min_val:
-            min_val = val
-        if val > max_val:
-            max_val = val
-    
-    return (max_val - min_val) * 0.5
+    std4 = std * std * std * std
+    return (m4 / std4) - 3.0
 
 
 def calc_entropy_turb(turbulence_buffer, buffer_count, n_bins=10):
-    """
-    Calculate Shannon entropy of turbulence distribution.
-    
-    Args:
-        turbulence_buffer: Circular buffer of turbulence values
-        buffer_count: Number of valid values in buffer
-        n_bins: Number of histogram bins
-    
-    Returns:
-        float: Shannon entropy in bits
-    """
+    """Calculate Shannon entropy of turbulence distribution."""
     if buffer_count < 2:
         return 0.0
-    
-    # Find min/max
+
     min_val = turbulence_buffer[0]
     max_val = turbulence_buffer[0]
-    
     for i in range(1, buffer_count):
         val = turbulence_buffer[i]
         if val < min_val:
             min_val = val
         if val > max_val:
             max_val = val
-    
+
     if max_val - min_val < 1e-10:
         return 0.0
-    
-    # Create histogram
+
     bin_width = (max_val - min_val) / n_bins
     bins = [0] * n_bins
-    
     for i in range(buffer_count):
         val = turbulence_buffer[i]
         bin_idx = int((val - min_val) / bin_width)
         if bin_idx >= n_bins:
             bin_idx = n_bins - 1
         bins[bin_idx] += 1
-    
-    # Calculate entropy
+
     entropy = 0.0
+    log2 = math.log(2)
     for count in bins:
         if count > 0:
             p = count / buffer_count
-            entropy -= p * math.log(p) / math.log(2)  # log2
-    
+            entropy -= p * math.log(p) / log2
     return entropy
 
 
-# ============================================================================
-# Feature Extractor (Publish-Time)
-# ============================================================================
+def calc_zero_crossing_rate(turbulence_buffer, buffer_count, mean=None):
+    """Calculate zero-crossing rate around mean."""
+    if buffer_count < 2:
+        return 0.0
 
-class PublishTimeFeatureExtractor:
-    """
-    Feature extractor that calculates features at publish time.
-    
-    No internal buffer - uses turbulence buffer from SegmentationContext
-    and current packet amplitudes.
-    
-    Features:
-    - skewness (W=1): From current packet amplitudes
-    - kurtosis (W=1): From current packet amplitudes  
-    - variance_turb: From MVS (already calculated)
-    - iqr_turb: From turbulence buffer
-    - entropy_turb: From turbulence buffer
-    """
-    
-    def __init__(self):
-        """Initialize feature extractor."""
-        self.last_features = None
-    
-    def compute_features(self, amplitudes, turbulence_buffer, buffer_count, moving_variance):
-        """
-        Compute all features at publish time.
-        
-        Args:
-            amplitudes: Current packet amplitudes (list)
-            turbulence_buffer: Circular buffer of turbulence values
-            buffer_count: Number of valid values in turbulence buffer
-            moving_variance: Already calculated by MVS
-        
-        Returns:
-            dict: All 5 features
-        """
-        self.last_features = {
-            # W=1 features (current packet)
-            'skewness': calc_skewness(amplitudes),
-            'kurtosis': calc_kurtosis(amplitudes),
-            
-            # Turbulence buffer features
-            'variance_turb': moving_variance,  # Already calculated by MVS!
-            'iqr_turb': calc_iqr_turb(turbulence_buffer, buffer_count),
-            'entropy_turb': calc_entropy_turb(turbulence_buffer, buffer_count),
-        }
-        
-        return self.last_features
-    
-    def get_features(self):
-        """Get last computed features."""
-        return self.last_features
+    if mean is None:
+        total = 0.0
+        for i in range(buffer_count):
+            total += turbulence_buffer[i]
+        mean = total / buffer_count
+
+    crossings = 0
+    prev_above = turbulence_buffer[0] >= mean
+    for i in range(1, buffer_count):
+        curr_above = turbulence_buffer[i] >= mean
+        if curr_above != prev_above:
+            crossings += 1
+        prev_above = curr_above
+    return crossings / (buffer_count - 1)
 
 
-# ============================================================================
-# Multi-Feature Detector (Confidence-based)
-# ============================================================================
+def calc_autocorrelation(turbulence_buffer, buffer_count, mean=None, variance=None, lag=1):
+    """Calculate lag-k autocorrelation coefficient."""
+    if buffer_count < lag + 2:
+        return 0.0
 
-class MultiFeatureDetector:
-    """
-    Multi-feature motion detector with confidence scoring.
-    
-    Uses top 5 features for robust detection.
-    Returns confidence score (0-1) instead of binary state.
-    
-    Thresholds derived from testing (14_test_publish_time_features.py) with window=50:
-    - iqr_turb: J=3.56, threshold=2.18
-    - entropy_turb: J=2.08, threshold=2.94
-    - variance_turb: J=1.21, threshold=0.99
-    - skewness: J=2.54, threshold=0.57
-    - kurtosis: J=2.24, threshold=-1.33 (below)
-    """
-    
-    # Thresholds derived from testing with SEG_WINDOW_SIZE=50
-    # Weights proportional to Fisher's Criterion
-    DEFAULT_THRESHOLDS = {
-        'iqr_turb': {'threshold': 2.18, 'weight': 1.0, 'direction': 'above'},
-        'skewness': {'threshold': 0.57, 'weight': 0.71, 'direction': 'above'},
-        'kurtosis': {'threshold': -1.33, 'weight': 0.63, 'direction': 'below'},
-        'entropy_turb': {'threshold': 2.94, 'weight': 0.58, 'direction': 'above'},
-        'variance_turb': {'threshold': 0.99, 'weight': 0.34, 'direction': 'above'},
+    if mean is None:
+        total = 0.0
+        for i in range(buffer_count):
+            total += turbulence_buffer[i]
+        mean = total / buffer_count
+
+    if variance is None:
+        variance = 0.0
+        for i in range(buffer_count):
+            diff = turbulence_buffer[i] - mean
+            variance += diff * diff
+        variance /= buffer_count
+
+    if variance < 1e-10:
+        return 0.0
+
+    autocovariance = 0.0
+    for i in range(buffer_count - lag):
+        autocovariance += (turbulence_buffer[i] - mean) * (turbulence_buffer[i + lag] - mean)
+    autocovariance /= (buffer_count - lag)
+    return autocovariance / variance
+
+
+def calc_mad(turbulence_buffer, buffer_count):
+    """Calculate median absolute deviation (MAD)."""
+    if buffer_count < 2:
+        return 0.0
+
+    sorted_vals = [0.0] * buffer_count
+    for i in range(buffer_count):
+        sorted_vals[i] = turbulence_buffer[i]
+    insertion_sort(sorted_vals, buffer_count)
+
+    mid = buffer_count // 2
+    if buffer_count % 2 == 0:
+        median = (sorted_vals[mid - 1] + sorted_vals[mid]) / 2.0
+    else:
+        median = sorted_vals[mid]
+
+    abs_devs = [0.0] * buffer_count
+    for i in range(buffer_count):
+        abs_devs[i] = abs(turbulence_buffer[i] - median)
+    insertion_sort(abs_devs, buffer_count)
+
+    if buffer_count % 2 == 0:
+        return (abs_devs[mid - 1] + abs_devs[mid]) / 2.0
+    return abs_devs[mid]
+
+
+def calc_waveform_length(turbulence_buffer, buffer_count):
+    """Calculate waveform length as total absolute first-difference."""
+    if buffer_count < 2:
+        return 0.0
+
+    total = 0.0
+    prev = turbulence_buffer[0]
+    for i in range(1, buffer_count):
+        curr = turbulence_buffer[i]
+        total += abs(curr - prev)
+        prev = curr
+    return total
+
+
+# Default feature set (12 features from turbulence window statistics/temporal patterns)
+DEFAULT_FEATURES = [
+    'turb_mean', 'turb_std', 'turb_max', 'turb_min', 'turb_zcr',
+    'turb_skewness', 'turb_kurtosis', 'turb_entropy', 'turb_autocorr', 'turb_mad',
+    'turb_slope', 'waveform_length'
+]
+
+
+def extract_features_by_name(turbulence_buffer, buffer_count, amplitudes=None, feature_names=None):
+    """Extract configured feature vector from turbulence buffer and amplitudes."""
+    if feature_names is None:
+        feature_names = DEFAULT_FEATURES
+
+    if buffer_count < 2:
+        return [0.0] * len(feature_names)
+
+    if hasattr(turbulence_buffer, '__iter__') and not isinstance(turbulence_buffer, list):
+        turb_list = list(turbulence_buffer)[:buffer_count]
+    else:
+        turb_list = turbulence_buffer[:buffer_count]
+
+    n = len(turb_list)
+    if n < 2:
+        return [0.0] * len(feature_names)
+
+    turb_mean = sum(turb_list) / n
+    turb_var = sum((x - turb_mean) ** 2 for x in turb_list) / n
+    turb_std = math.sqrt(turb_var) if turb_var > 0 else 0.0
+    turb_min = min(turb_list)
+    turb_max = max(turb_list)
+
+    mean_i = (n - 1) / 2.0
+    numerator = 0.0
+    denominator = 0.0
+    for i in range(n):
+        diff_i = i - mean_i
+        diff_x = turb_list[i] - turb_mean
+        numerator += diff_i * diff_x
+        denominator += diff_i * diff_i
+    turb_slope = numerator / denominator if denominator > 0 else 0.0
+
+    feature_calculators = {
+        'turb_mean': lambda: turb_mean,
+        'turb_std': lambda: turb_std,
+        'turb_max': lambda: turb_max,
+        'turb_min': lambda: turb_min,
+        'turb_zcr': lambda: calc_zero_crossing_rate(turb_list, n, mean=turb_mean),
+        'turb_skewness': lambda: calc_skewness(turb_list, n, turb_mean, turb_std),
+        'turb_kurtosis': lambda: calc_kurtosis(turb_list, n, turb_mean, turb_std),
+        'turb_entropy': lambda: calc_entropy_turb(turb_list, n),
+        'turb_autocorr': lambda: calc_autocorrelation(turb_list, n, mean=turb_mean, variance=turb_var),
+        'turb_mad': lambda: calc_mad(turb_list, n),
+        'turb_slope': lambda: turb_slope,
+        'waveform_length': lambda: calc_waveform_length(turb_list, n),
     }
-    
-    def __init__(self, thresholds=None, min_confidence=0.5):
-        """
-        Initialize multi-feature detector.
-        
-        Args:
-            thresholds: Dict of feature thresholds (or None for defaults)
-            min_confidence: Minimum confidence to declare motion (0-1)
-        """
-        self.thresholds = thresholds or self.DEFAULT_THRESHOLDS
-        self.min_confidence = min_confidence
-        self.total_weight = sum(t['weight'] for t in self.thresholds.values())
-        
-        self.last_confidence = 0.0
-        self.last_triggered = []
-    
-    def detect(self, features):
-        """
-        Detect motion based on multiple features.
-        
-        Args:
-            features: Dict of feature values
-        
-        Returns:
-            tuple: (is_motion, confidence, triggered_features)
-        """
-        if features is None:
-            return False, 0.0, []
-        
-        triggered = []
-        weighted_score = 0.0
-        
-        for name, config in self.thresholds.items():
-            if name not in features:
-                continue
-            
-            value = features[name]
-            threshold = config['threshold']
-            weight = config['weight']
-            direction = config['direction']
-            
-            # Check if feature triggers
-            if direction == 'above' and value > threshold:
-                triggered.append(name)
-                weighted_score += weight
-            elif direction == 'below' and value < threshold:
-                triggered.append(name)
-                weighted_score += weight
-        
-        # Calculate confidence (0-1)
-        confidence = weighted_score / self.total_weight if self.total_weight > 0 else 0.0
-        is_motion = confidence >= self.min_confidence
-        
-        self.last_confidence = confidence
-        self.last_triggered = triggered
-        
-        return is_motion, confidence, triggered
-    
-    def get_confidence(self):
-        """Get last computed confidence."""
-        return self.last_confidence
-    
-    def get_triggered(self):
-        """Get list of last triggered features."""
-        return self.last_triggered
+
+    features = []
+    for name in feature_names:
+        if name not in feature_calculators:
+            raise ValueError(f"Unknown feature: {name}. Available: {list(feature_calculators.keys())}")
+        features.append(feature_calculators[name]())
+    return features
+
+
+# Alias for backward compatibility
+FEATURE_NAMES = DEFAULT_FEATURES

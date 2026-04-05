@@ -2,11 +2,13 @@
 
 Quick guide to tune ESPectre for reliable movement detection in your environment.
 
+> **Note on Detection Algorithms**: This guide focuses on **MVS** (the default detection algorithm). Filters (low-pass, Hampel) apply to both MVS and ML detectors.
+
 ---
 
 ## Quick Start (5 minutes)
 
-> **Note on Subcarrier Selection**: ESPectre automatically selects optimal subcarriers using the NBVI (Normalized Baseline Variability Index) algorithm at first boot. No manual configuration needed.
+> **Note on Subcarrier Selection** (MVS only): ESPectre automatically selects optimal subcarriers at boot using the NBVI algorithm. No manual configuration needed. ML mode uses fixed subcarriers.
 
 ### 1. Flash and Boot
 
@@ -17,18 +19,20 @@ After flashing your device with ESPHome:
 esphome logs <your-config>.yaml
 ```
 
-### 2. Wait for NBVI Calibration
+### 2. Wait for Band Calibration
 
 On first boot, keep the room **empty and still** for 10 seconds. The system will:
-1. Collect 1000 CSI packets
-2. Analyze subcarrier characteristics
-3. Select optimal 12 subcarriers
-4. Save configuration (persists across reboots)
+1. Collect CSI packets during baseline (10 × `window_size`, default 750 packets)
+2. Run NBVI calibration algorithm to select optimal subcarriers
+3. Select 12 optimal subcarriers for motion detection
+4. Calculate adaptive threshold based on baseline noise
 
 Look for log messages like:
 ```
-[I][espectre:xxx]: NBVI calibration complete, selected 12 subcarriers
+[I][Calibration]: ✓ Calibration successful: [<12 auto-selected subcarriers>]
 ```
+
+NOTE: In ML mode, calibration is skipped and logs show fixed defaults.
 
 ### 3. Test Movement
 
@@ -44,37 +48,53 @@ Look for state changes:
 
 ### 4. Adjust Threshold if Needed
 
-If detection isn't working well, modify `segmentation_threshold` in your YAML:
+By default, ESPectre uses an **adaptive threshold** calculated automatically during calibration based on baseline noise. This works well in most environments.
 
 ```yaml
 espectre:
-  segmentation_threshold: 1.0  # Default
+  segmentation_threshold: auto
+```
+
+| Value | Description |
+|-------|-------------|
+| `auto` | Adaptive threshold - Minimizes false positives (default) |
+| `min` | Maximum sensitivity (may have false positives) |
+| `0.0-10.0` | Fixed manual threshold |
+
+**Examples:**
+```yaml
+espectre:
+  segmentation_threshold: auto  # Default, zero FP
+  # segmentation_threshold: min  # Max sensitivity
+  # segmentation_threshold: 1.5  # Fixed manual value
 ```
 
 **Rule of thumb:**
-- Too many false positives → increase threshold (try 2.0-5.0)
-- Missing movements → decrease threshold (try 0.5-0.8)
+- Too many false positives → use `auto` or increase threshold (try 2.0-5.0)
+- Missing movements → use `min` or decrease threshold (try 0.5-0.8)
 
 After changing, re-flash:
 ```bash
 esphome run <your-config>.yaml
 ```
 
-**Interactive tuning:** You can also adjust the threshold in real-time using [ESPectre - The Game](https://espectre.dev/game). Connect via USB, drag the threshold slider, and see immediate visual feedback. Changes are saved to flash and apply to Home Assistant as well.
+**Interactive tuning:** You can also adjust the threshold in real-time using [ESPectre - The Game](https://espectre.dev/game). Connect via USB, drag the threshold slider, and see immediate visual feedback. Note that runtime adjustments are temporary (session-only) - the adaptive threshold is recalculated on every boot.
 
 ---
 
 ## Understanding Parameters
 
-### Segmentation Threshold (0.5-10.0)
+> The following parameters apply to the MVS detection algorithm.
 
-**What it does:** Determines sensitivity for motion detection. With normalization enabled (default), this represents multiples of baseline noise.
+### Segmentation Threshold
 
-**Default:** 1.0
+**What it does:** Determines sensitivity for motion detection (MVS only).
+
+**Default:** `auto` (adaptive threshold, minimizes false positives)
 
 | Value | Sensitivity | Use Case |
 |-------|-------------|----------|
-| 0.5-1.0 | High | **Default** - Detect subtle movements |
+| 0.5-1.0 | High | Detect subtle movements |
 | 1.5-3.0 | Medium | General purpose, most environments |
 | 3.0-5.0 | Low | Noisy environments, reduce false positives |
 | 5.0-10.0 | Very Low | Only detect significant movements |
@@ -82,16 +102,38 @@ esphome run <your-config>.yaml
 **Configuration:**
 ```yaml
 espectre:
-  segmentation_threshold: 1.0  # "1x baseline noise" (default)
+  segmentation_threshold: auto  # or "min" or a number (0.0-10.0)
 ```
 
-**Note:** Normalization is always enabled, so threshold 1.0 means "4× baseline noise". This works consistently across all ESP32 variants.
+| Value | Formula | Effect |
+|-------|---------|--------|
+| `auto` | Adaptive | Minimizes false positives (default) |
+| `min` | Maximum sensitivity | Catches faint motion |
+| number | Fixed | Manual override |
+
+**Note:** Runtime adjustments via Home Assistant slider are temporary (session-only). The adaptive threshold is recalculated on every boot.
+
+### Detection Algorithm (mvs/ml)
+
+**What it does:** Selects the motion detection algorithm.
+
+**Default:** `mvs`
+
+```yaml
+espectre:
+  detection_algorithm: mvs  # or ml
+```
+
+| Algorithm | Description | Threshold Range | Best For |
+|-----------|-------------|-----------------|----------|
+| `mvs` | Moving Variance Segmentation | 0.0 - 10.0 | General purpose, adaptive |
+| `ml` | Neural network detector | 0.0 - 10.0 (scaled metric) | Higher accuracy |
 
 ### Window Size (10-200 packets)
 
 **What it does:** Number of turbulence samples used to calculate moving variance.
 
-**Default:** 50 packets
+**Default:** 75 packets
 
 | Value | Response | Stability | Use Case |
 |-------|----------|-----------|----------|
@@ -102,7 +144,7 @@ espectre:
 **Configuration:**
 ```yaml
 espectre:
-  segmentation_window_size: 50
+  segmentation_window_size: 75  # default
 ```
 
 <details>
@@ -124,7 +166,7 @@ For general movement detection, a window is recommended that captures transient 
 | $1$ second | $100$ packets | **Recommended**. Optimal balance, captures $1-2$ steps or a complete gesture. |
 | $2$ seconds | $200$ packets | Slower to react, but very robust against false positives. |
 
-**Recommendation:** Start with $N=50$ packets (corresponding to $0.5$ seconds). This is a good starting point for detecting activities like entering a room.
+**Recommendation:** Start with $N=75$ packets (corresponding to $0.75$ seconds at 100 pps). This is the default and a good starting point for detecting activities like entering a room.
 
 </details>
 
@@ -139,13 +181,34 @@ For general movement detection, a window is recommended that captures transient 
 | 50 pps | Basic presence detection, minimal overhead |
 | 100 pps | **Recommended** - Activity recognition |
 | 600-1000 pps | Fast motion detection, precision localization |
-| 0 pps | Disabled (only if you have other continuous WiFi traffic) |
+| 0 pps | Disabled - use external WiFi traffic (see [External Traffic Mode](SETUP.md#external-traffic-mode)) |
 
 **Configuration:**
 ```yaml
 espectre:
   traffic_generator_rate: 100
 ```
+
+### Publish Interval (1-1000 packets)
+
+**What it does:** Controls how many CSI packets are processed before updating Home Assistant sensors.
+
+**Default:** Same as `traffic_generator_rate` (or 100 if traffic generator is disabled)
+
+| Scenario | Configuration | Update Frequency |
+|----------|---------------|------------------|
+| Default | `traffic_generator_rate: 100` | ~1 update/sec |
+| Faster updates | `publish_interval: 50` | ~2 updates/sec |
+| External traffic | `traffic_generator_rate: 0`, `publish_interval: 100` | Depends on traffic |
+
+**Configuration:**
+```yaml
+espectre:
+  traffic_generator_rate: 100
+  publish_interval: 50  # Optional: override publish rate
+```
+
+> **Note:** Lower `publish_interval` values increase CPU usage and Home Assistant traffic but provide more responsive detection.
 
 <details>
 <summary><b>Understanding Sampling Rates (Nyquist-Shannon Theorem)</b></summary>
@@ -174,36 +237,42 @@ In Wi-Fi sensing, Fmax is the highest Doppler frequency generated by human movem
 
 ---
 
-## Normalization (Auto-Scaling)
+## Adaptive Threshold
 
-### Baseline Variance Normalization
+### Automatic Threshold Calibration
 
-**What it does:** Automatically attenuates turbulence values when baseline is too high. This prevents extreme motion values while keeping signals in a consistent range.
+**What it does:** Automatically calculates the optimal detection threshold based on baseline noise characteristics. This minimizes false positives while maintaining high recall.
 
 **Status:** Always enabled (automatic)
 
 **How it works:**
-1. During calibration, calculates the baseline variance using selected subcarriers
-2. If baseline > 0.25: attenuate with `scale = 0.25 / baseline_variance`
-3. If baseline ≤ 0.25: no scaling needed (scale = 1.0)
-4. Result: baseline is never amplified, only attenuated when necessary
+1. During calibration, collects 10 × `window_size` CSI packets during baseline (default 750, room must be quiet)
+2. **Band selection** uses NBVI algorithm to select optimal subcarriers
+3. **Threshold calculation** depends on `segmentation_threshold` setting
 
-**Fallback behavior:** If subcarrier selection fails (e.g., due to poor signal quality), normalization is still calculated using the default subcarriers. This ensures motion detection remains usable even when NBVI calibration cannot find optimal subcarriers.
+| Mode | Formula | Description |
+|------|---------|-------------|
+| `auto` (default) | P95 × 1.1 | Minimizes false positives |
+| `min` | P100 × 1.0 | Maximum sensitivity |
+
+**Note:** Band selection always uses NBVI algorithm. Only the threshold calculation varies.
+
+**Configuration:**
+```yaml
+espectre:
+  segmentation_threshold: auto  # or "min" or a number
+```
 
 **Benefits:**
-- Prevents over-amplification of weak signals (avoids extreme motion values)
-- Attenuates strong signals to keep them in usable range
-- Same threshold works on ESP32-S3, C6, C3, etc.
+- **Minimizes false positives** with `auto` mode
+- **High recall** (>98%) maintained across environments
+- Same algorithm works on ESP32-S3, C6, C3, etc.
 - No device-specific tuning required
+- Fully automatic - no manual threshold adjustment needed
 
-**Threshold guidelines:**
-
-| Threshold | Baseline multiplier | Use Case |
-|-----------|---------------------|----------|
-| 0.5 | 2× baseline | Very sensitive, may have false positives |
-| **1.0** | **4× baseline** | **Default** - Good balance |
-| 2.0 | 8× baseline | Less sensitive, noisy environments |
-| 3.0+ | 12×+ baseline | Only detect significant movements |
+**When to override:**
+- Too many false positives → increase threshold (try 2.0-5.0)
+- Missing movements → decrease threshold (try 0.5-0.8)
 
 ---
 
@@ -213,33 +282,72 @@ In Wi-Fi sensing, Fmax is the highest Doppler frequency generated by human movem
 
 **What it does:** Removes statistical outliers from turbulence values using MAD (Median Absolute Deviation). This can help reduce false positives caused by sudden interference.
 
-**Default:** Disabled
+**Applies to:** Both MVS and ML detectors.
 
-> ⚠️ **Note:** The Hampel filter is disabled by default because MVS already provides robust motion detection with 0% false positives in typical environments. Enabling it reduces detection sensitivity (Recall drops from 98.1% to 96.3%). Only enable in environments with high electromagnetic interference causing sudden spikes.
+**Default:** Enabled (threshold: 5.0 MAD, window: 7)
+
+> The Hampel filter removes outlier spikes in turbulence values. With threshold 5.0 it only replaces extreme outliers (>5 MAD from median), preserving motion sensitivity while eliminating false positives caused by transient interference.
 
 **Configuration:**
 ```yaml
 espectre:
-  hampel_enabled: false    # Enable/disable (default: false)
-  hampel_window: 7         # Window size (3-11 packets)
-  hampel_threshold: 4.0    # MAD multiplier (1.0-10.0, lower = more aggressive)
+  hampel_enabled: true     # default
+  hampel_window: 7         # sliding window size (3-11)
+  hampel_threshold: 5.0    # MAD multiplier, higher = less aggressive
 ```
 
-| Parameter | Default | Range | Description |
-|-----------|---------|-------|-------------|
-| `hampel_enabled` | false | - | Enable/disable Hampel filter |
-| `hampel_window` | 7 | 3-11 | Number of samples in the sliding window |
-| `hampel_threshold` | 4.0 | 1.0-10.0 | MAD multiplier (lower = more aggressive filtering) |
+See [SETUP.md](SETUP.md#configuration-parameters) for parameter details.
 
-**When to enable:**
-- Environments with high electromagnetic interference causing sudden spikes
-- Industrial settings with heavy machinery
-- Proximity to microwave ovens or multiple WiFi access points
-- Experiencing unexplained false positives during baseline (room empty)
+**When to disable:**
+- If you observe reduced sensitivity in very low-SNR environments
+- When maximum detection sensitivity is needed and the environment has no transient interference
 
-**When to keep disabled (default):**
-- Normal home/office environment
-- Maximum detection sensitivity needed
+---
+
+## Gain Lock
+
+### AGC/FFT Gain Lock
+
+**What it does:** Locks the AGC (Automatic Gain Control) and FFT gain values after initial calibration to eliminate amplitude variations caused by the WiFi hardware. This improves CSI stability and motion detection accuracy.
+
+**Default:** auto
+
+**Configuration:**
+```yaml
+espectre:
+  gain_lock: auto  # auto (default), enabled, disabled
+```
+
+| Mode | Description |
+|------|-------------|
+| `auto` | Enable gain lock but skip if signal too strong (AGC < 30). Uses CV normalization when skipped. **Recommended.** |
+| `enabled` | Always force gain lock. May freeze if too close to AP. |
+| `disabled` | Never lock gain. Uses CV normalization for stable detection. Works at any distance. |
+
+**How it works:**
+1. During the first 300 packets (~3 seconds), ESPectre collects AGC/FFT samples and calculates the **median** (more robust than mean against outliers)
+2. These values are then "locked" (forced) to eliminate hardware-induced variations
+3. In `auto` mode, if AGC < 30 (signal too strong), gain lock is skipped and **CV normalization** is enabled instead
+4. In `disabled` mode, baseline is collected but never locked; CV normalization provides stable detection
+
+**CV normalization:** When gain is not locked (skipped or disabled), spatial turbulence is calculated as the Coefficient of Variation (CV = std/mean) instead of raw standard deviation. This is gain-invariant: if all amplitudes are scaled by factor k (due to AGC), then σ(kA)/μ(kA) = σ(A)/μ(A). This maintains detection accuracy without hardware locking.
+
+**When to change from `auto`:**
+
+| Situation | Recommended Setting |
+|-----------|---------------------|
+| Normal operation (3-8m from AP) | `auto` (default) |
+| Testing very close to AP (< 2m) | `disabled` |
+| Debugging calibration issues | `disabled` |
+| Maximum CSI stability needed | `enabled` (if RSSI < -40 dB) |
+
+**Warning log when signal too strong:**
+```
+[W][GainController]: Signal too strong (AGC=14 < 30) - skipping gain lock
+[W][GainController]: Move sensor 2-3 meters from AP for optimal performance
+```
+
+> **Note:** Gain lock is only available on ESP32-S3, ESP32-C3, ESP32-C5, and ESP32-C6. On ESP32 (original) and ESP32-S2, it's automatically skipped (not supported by hardware).
 
 ---
 
@@ -249,6 +357,8 @@ espectre:
 
 **What it does:** Removes high-frequency noise from turbulence values using a 1st-order Butterworth IIR filter. This significantly reduces false positives in noisy RF environments.
 
+**Applies to:** Both MVS and ML detectors.
+
 **Default:** Disabled
 
 > ℹ️ **Note:** The low-pass filter is disabled by default for maximum simplicity. Enable it if you experience false positives in noisy RF environments.
@@ -256,14 +366,11 @@ espectre:
 **Configuration:**
 ```yaml
 espectre:
-  lowpass_enabled: false    # Enable/disable (default: false)
-  lowpass_cutoff: 11.0      # Cutoff frequency in Hz (5.0-20.0)
+  lowpass_enabled: true
+  lowpass_cutoff: 11.0
 ```
 
-| Parameter | Default | Range | Description |
-|-----------|---------|-------|-------------|
-| `lowpass_enabled` | false | - | Enable/disable low-pass filter |
-| `lowpass_cutoff` | 11.0 | 5.0-20.0 | Cutoff frequency in Hz (lower = more filtering) |
+See [SETUP.md](SETUP.md#configuration-parameters) for parameter details.
 
 **Cutoff frequency guide:**
 - **Lower (5-8 Hz)**: More aggressive filtering, reduces FP more but may miss fast movements
@@ -273,6 +380,49 @@ espectre:
 **When to adjust:**
 - Increase cutoff if detecting fast movements (sports, rapid gestures)
 - Decrease cutoff in very noisy RF environments with persistent FP
+
+---
+
+## Sensor Placement
+
+### Distance from Access Point
+
+The distance between the ESP32 sensor and your WiFi access point (AP) significantly impacts CSI quality and system stability.
+
+| Distance | RSSI | AGC | Status | Notes |
+|----------|------|-----|--------|-------|
+| < 0.5m | > -30 dB | 0-15 | System may freeze | Too close, signal saturated |
+| 0.5-2m | -30 to -40 dB | 15-30 | Marginal | Works with `gain_lock: disabled` |
+| **3-8m** | -40 to -70 dB | **30-60** | **Optimal** | Best CSI quality and stability |
+| 8-15m | -70 to -80 dB | 60-80 | Good | Still reliable detection |
+| > 15m | < -80 dB | > 80 | Reduced quality | Weaker signal, more noise |
+
+**Why distance matters:**
+
+When the sensor is too close to the AP, the received signal is extremely strong, causing:
+1. **AGC saturation**: The automatic gain control cannot reduce amplification enough
+2. **CSI distortion**: Signal clipping leads to unreliable CSI data
+3. **Gain lock freeze**: When `phy_force_rx_gain()` is called with a very low AGC value, the WiFi driver may fail to decode frames, halting CSI reception entirely
+
+**Symptoms of being too close:**
+- System freezes after "Auto-Calibration Starting" log
+- Repeated "ping_sock: send error=0" messages
+- Low AGC values in logs (< 30)
+- High RSSI (> -40 dB)
+
+**Solution:**
+1. Move the sensor 2-3 meters away from the AP
+2. Or set `gain_lock: disabled` (less optimal but works at any distance)
+
+**Checking your placement:**
+
+Look at the gain lock log after WiFi connection:
+```
+[I][GainController]: Gain locked: AGC=51, FFT=234 (after 300 packets)
+```
+
+- **AGC > 30**: Good placement, gain lock works correctly
+- **AGC < 30**: Consider moving the sensor further from the AP
 
 ---
 
@@ -364,6 +514,49 @@ espectre:
 
 4. **Check router compatibility:** Some mesh routers or WiFi 6E may have issues
 
+5. **If protocol/bandwidth logs show `unavailable`:** this can happen on some target/band mode API paths and does not automatically mean CSI is broken. Focus on CSI packet flow (`pps`, dropped packets, calibration progress) to assess runtime health.
+
+### System Freezes During Calibration
+
+**Symptoms:** Device freezes after "Auto-Calibration Starting (file-based storage)" message. May show watchdog timeout or repeated "ping_sock: send error=0" messages.
+
+**Cause:** Sensor is too close to the access point. When RSSI > -40 dB, the AGC value is very low (< 30), and forcing this gain causes the WiFi driver to fail decoding frames.
+
+**Solutions:**
+
+1. **Move the sensor further from the AP** (recommended):
+   - Place at least 2-3 meters away
+   - Optimal distance: 3-8 meters
+   - Check logs for AGC value > 30 after gain lock
+
+2. **Disable gain lock** (workaround):
+   ```yaml
+   espectre:
+     gain_lock: disabled
+   ```
+   This allows operation at any distance but with slightly less stable CSI.
+
+3. **Use `auto` mode** (default, v2.4.0+):
+   ```yaml
+   espectre:
+     gain_lock: auto  # Default - skips gain lock if AGC < 30
+   ```
+   In `auto` mode, ESPectre automatically skips gain lock when the signal is too strong, logging a warning instead of freezing.
+
+**Diagnosis:**
+
+Check the gain lock log:
+```
+[I][GainController]: Gain locked: AGC=51, FFT=234  # Good - AGC > 30
+```
+
+vs.
+```
+[W][GainController]: Signal too strong (AGC=14 < 30) - skipping gain lock  # Auto mode protection
+```
+
+---
+
 ### Unstable Detection (Flickering)
 
 **Symptoms:** Rapid flickering between IDLE and MOTION.
@@ -404,9 +597,32 @@ espectre:
 2. **Avoid DFS channels:** Channels 52-144 (5GHz DFS) may switch unexpectedly due to radar detection
 3. **Check for interference:** Nearby networks on the same channel can cause instability
 
-### Reset Calibration
+### Runtime Recalibration (MVS only)
 
-**When needed:** Start fresh with new subcarrier selection.
+**When needed:** Recalibrate without reflashing (e.g., after moving furniture or changing room layout). This applies only to MVS mode; ML uses fixed subcarriers embedded in the model.
+
+**How to recalibrate from Home Assistant:**
+
+1. Go to your ESPectre device in Home Assistant
+2. Find the **Calibrate** switch (`switch.espectre_calibrate`)
+3. Turn it ON to start calibration
+4. The switch will automatically turn OFF when calibration completes
+
+**Important:**
+- Keep the room quiet and empty during calibration (~10 seconds)
+- The switch is disabled during calibration to prevent interruption
+- You cannot cancel calibration once started
+
+**Logs during recalibration:**
+```
+[I][espectre]: Manual recalibration triggered
+[I][espectre]: Starting band calibration...
+[I][espectre]: Calibration completed successfully
+```
+
+### Reset Calibration (MVS only)
+
+**When needed:** Start completely fresh with new subcarrier selection and clear all saved settings. This applies only to MVS mode.
 
 **How to reset:**
 
@@ -420,8 +636,8 @@ espectre:
 
 **After reset:**
 - Keep room quiet and empty for 10 seconds
-- NBVI will automatically recalibrate
-- Check logs for "NBVI calibration complete"
+- NBVI band selection will automatically recalibrate
+- Check logs for "Calibration successful"
 
 ---
 
@@ -446,7 +662,7 @@ After integration, monitor sensors in Home Assistant:
 
 Use **History** graphs to visualize detection patterns over time.
 
-**Tip:** You can adjust the threshold directly from Home Assistant without re-flashing. Changes are saved to device preferences and persist across reboots.
+**Tip:** You can adjust the threshold directly from Home Assistant without re-flashing. Changes are session-only - the adaptive threshold is recalculated on every boot.
 
 ---
 
@@ -456,9 +672,10 @@ Use **History** graphs to visualize detection patterns over time.
 2. **One change at a time:** Adjust one parameter, re-flash, test for 5-10 minutes
 3. **Document your settings:** Note what works for your environment
 4. **Seasonal adjustments:** Retune when furniture changes or new interference sources appear
-5. **Distance matters:** Keep sensor 3-8m from router for optimal performance
-6. **Quiet calibration:** Ensure no movement during first 5-10 seconds after boot
-7. **Try the game:** Use [ESPectre - The Game](https://espectre.dev/game) for interactive threshold tuning with real-time visual feedback
+5. **Distance matters:** Keep sensor 3-8m from router (RSSI between -40 and -70 dB for best results)
+6. **Check AGC value:** After boot, look for "Gain locked: AGC=XX" - values 30-60 are optimal
+7. **Quiet calibration:** Ensure no movement during first 10 seconds after boot
+8. **Try the game:** Use [ESPectre - The Game](https://espectre.dev/game) for interactive threshold tuning with real-time visual feedback
 
 ---
 

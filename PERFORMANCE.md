@@ -1,213 +1,171 @@
 # Performance Metrics
 
-This document provides detailed performance metrics for ESPectre's motion detection system based on Moving Variance Segmentation (MVS).
-
-## Test Methodology
-
-### Test Data
-- **Baseline packets**: 1000 CSI packets captured during idle state (no movement)
-- **Movement packets**: 1000 CSI packets captured during active movement
-- **Total**: 2000 packets
-- **Packet Rate**: 100 packets/second
-
-### Configuration
-| Parameter | Value |
-|-----------|-------|
-| Window Size | 50 packets |
-| Threshold | 1.0 |
-| Subcarriers | [11-22] (12 subcarriers) |
-
-### Test Environment
-- **Platform**: ESP32-C6 (results expected to be similar on other ESP32 variants)
-- **Distance from router**: ~3 meters
-- **Environment**: Indoor residential
-
----
-
-## Results
-
-Both platforms produce **identical results** using the same test methodology:
-- Process all 1000 baseline packets first (expecting IDLE)
-- Then process all 1000 movement packets (expecting MOTION)
-- Continuous context (no reset between baseline and movement)
-- Same parameters: window_size=50, threshold=1.0, subcarriers=[11-22]
-- Filters disabled (lowpass, hampel off by default), normalization always enabled
-
-```
-CONFUSION MATRIX (1000 baseline + 1000 movement packets):
-                    Predicted
-                IDLE        MOTION
-Actual IDLE     1000 (TN)   0 (FP)
-Actual MOTION   19 (FN)     981 (TP)
-```
-
-| Metric | Value | Target | Status |
-|--------|-------|--------|--------|
-| **Recall** | 98.1% | >90% | ✅ |
-| **Precision** | 100.0% | - | ✅ |
-| **FP Rate** | 0.0% | <10% | ✅ |
-| **F1-Score** | 99.0% | - | ✅ |
-
-### Detailed Counts
-| Metric | Count | Description |
-|--------|-------|-------------|
-| True Positives (TP) | 981 | Movement correctly detected |
-| True Negatives (TN) | 1000 | Idle correctly identified |
-| False Positives (FP) | 0 | No false alarms |
-| False Negatives (FN) | 19 | Missed movement detections |
-
-> **Note**: These tests were performed with optional filters disabled (lowpass, hampel). Normalization is always enabled for cross-device consistency. See [TUNING.md](TUNING.md) for filter configuration options.
-
----
-
-## Interpretation
-
-### Strengths
-- **Zero false positives**: The system never triggers false alarms during idle periods
-- **High recall (98.1%)**: Detects 98.1% of all movement events
-- **Perfect precision**: When motion is reported, it's always real motion
-
-### False Negatives Analysis
-The 19 false negatives (1.9% of movement packets) are typically caused by:
-1. **Transition periods**: Packets at the very start/end of movement sequences
-2. **Micro-movements**: Very subtle movements that don't exceed the threshold
-3. **Buffer warm-up**: First few packets after state transitions
-
-These missed detections are acceptable for most use cases (home automation, presence detection) where brief detection gaps don't impact functionality.
-
----
-
-## How to Verify Performance
-
-### Monitor Detection in Real-Time
-
-```bash
-# View ESPHome logs (choose your platform)
-esphome logs <your-config>.yaml
-```
-
-Watch for state transitions:
-- `state=MOTION` when movement occurs
-- `state=IDLE` when room is quiet
-
-### Home Assistant History
-
-Use Home Assistant's History panel to visualize:
-- **binary_sensor.espectre_motion_detected** - Motion events over time
-- **sensor.espectre_movement_score** - Movement intensity graph
-
----
-
-## Reproducing These Results
-
-### Test Data Location
-
-Both platforms use the **same real CSI data** captured from ESP32-C6:
-
-| Platform | Baseline Data | Movement Data |
-|----------|---------------|---------------|
-| **C++** | `test/data/real_csi_data_esp32.h` | `test/data/real_csi_arrays.inc` |
-| **Python** | `micro-espectre/data/baseline/baseline_c6_001.npz` | `micro-espectre/data/movement/movement_c6_001.npz` |
-
-### Running the Tests
-
-**C++ (ESPHome component)**:
-
-```bash
-# Activate virtual environment
-source venv/bin/activate
-
-# Run motion detection test suite (shows confusion matrix)
-cd test
-pio test -f test_motion_detection -vvv
-```
-
-**Python (Micro-ESPectre)**:
-
-```bash
-# Activate virtual environment
-source venv/bin/activate
-
-# Run performance test
-cd micro-espectre/tests
-pytest test_validation_real_data.py::TestPerformanceMetrics::test_mvs_detection_accuracy -v -s
-```
-
-### Test Implementation
-
-| Platform | Test File | Test Function |
-|----------|-----------|---------------|
-| **C++** | `test/test/test_motion_detection/test_motion_detection.cpp` | `test_mvs_detection_accuracy()` |
-| **Python** | `micro-espectre/tests/test_validation_real_data.py` | `TestPerformanceMetrics::test_mvs_detection_accuracy()` |
-
-Both tests use identical methodology:
-1. Initialize MVS with `window_size=50`, `threshold=1.0`, `subcarriers=[11-22]`
-2. Process all 1000 baseline packets (no reset)
-3. Continue processing all 1000 movement packets (same context)
-4. Count TP, TN, FP, FN based on detected state vs expected state
-5. Assert: Recall > 95%, FP Rate < 1%
+This document provides detailed performance metrics for ESPectre's motion detection algorithms.
 
 ---
 
 ## Performance Targets
 
-ESPectre is designed for **security and presence detection** applications where:
+| Metric | Target (all chips) | Rationale |
+|--------|--------------------|-----------|
+| Recall | >95% | Minimize missed detections |
+| FP Rate | <5% | Avoid false alarms |
 
-| Priority | Metric | Target | Rationale |
-|----------|--------|--------|-----------|
-| **High** | Recall | >90% | Minimize missed detections |
-| **High** | FP Rate | <10% | Avoid false alarms |
-| **Medium** | Precision | >90% | Ensure reported motion is real |
-| **Medium** | F1-Score | >90% | Balance precision and recall |
+--
+### Test Configuration
 
-The current configuration exceeds all targets.
+Configuration used for all test results (unified across chips):
 
----
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Window Size | 75 | `DETECTOR_DEFAULT_WINDOW_SIZE` |
+| Calibration | NBVI | Auto-selects 12 non-consecutive subcarriers |
+| Hampel Filter | ON | Enabled for both MVS and ML (window=7, threshold=5.0 MAD) |
+| Adaptive Threshold | Percentile-based | P95 × 1.1 (`DEFAULT_ADAPTIVE_FACTOR`) |
+| CV Normalization | Per-file | Based on `gain_locked` metadata (`false` => apply CV norm) |
 
-## Tuning for Your Environment
-
-Real performances may vary based on:
-- **Distance from router**: Optimal 3-8 meters
-- **Room layout**: Open spaces vs. cluttered rooms
-- **Wall materials**: Drywall vs. concrete
-- **Interference**: Other Wi-Fi devices, microwave ovens
-
-See [TUNING.md](TUNING.md) for detailed tuning instructions.
+CV normalization is applied per-file based on whether data was collected with AGC gain lock enabled. See Test Data section for details.
 
 ---
 
-## NBVI Automatic Calibration
+## Test Data
 
-When using NBVI (Normalized Baseline Variability Index) for automatic subcarrier selection instead of the fixed band [11-22], performance is slightly lower but still excellent:
+| Chip | Baseline | Movement | Total | Gain Lock |
+|------|----------|----------|-------|-----------|
+| ESP32-C3 | 2684 | 2658 | 5342 | Yes |
+| ESP32-C5 | 2609 | 2607 | 5216 | Yes |
+| ESP32-C6 | 2697 | 2779 | 5476 | Yes |
+| ESP32-S3 | 2655 | 2670 | 5325 | Yes |
+| ESP32 | 2081 | 2189 | 4270 | No |
 
-| Metric | Fixed Band [11-22] | NBVI Auto-Calibration |
-|--------|--------------------|-----------------------|
-| **Recall** | 98.1% | 96.4% |
-| **Precision** | 100.0% | 100.0% |
-| **FP Rate** | 0.0% | 0.0% |
-| **F1-Score** | 99.0% | 98.2% |
-
-**Why use NBVI instead of fixed band?**
-
-The fixed band [11-22] achieves slightly better performance in the reference test environment, but **subcarrier quality varies significantly between environments** due to:
-- Room geometry and materials (walls, furniture, metal objects)
-- WiFi interference from neighboring networks
-- Distance and orientation relative to the access point
-- ESP32 variant and antenna characteristics
-
-**NBVI automatically selects the optimal subcarriers for each specific environment**, making it the recommended choice for production deployments. The fixed band is useful only for controlled test environments where optimal subcarriers have been manually identified.
+Data location: `micro-espectre/data/`
 
 ---
 
-## Version History
+## Running Tests
 
-| Date | Version | Mode | Recall | Precision | FP Rate | F1-Score | Notes |
-|------|---------|------|--------|-----------|---------|----------|-------|
-| 2025-12-27 | v2.3.0 | Fixed | 98.1% | 100.0% | 0.0% | 99.0% | Multi-window validation |
-| 2025-12-27 | v2.3.0 | NBVI | 96.4% | 100.0% | 0.0% | 98.2% | Multi-window validation |
-| 2025-12-13 | v2.2.0 | Fixed | 98.1% | 100.0% | 0.0% | 99.0% | ESPHome Port |
-| 2025-12-13 | v2.2.0 | NBVI | 96.5% | 100.0% | 0.0% | 98.2% | ESPHome Port |
-| 2025-11-28 | v1.4.0 | Fixed | 98.1% | 100.0% | 0.0% | 99.0% | Initial MVS implementation |
+```bash
+source venv/bin/activate
+
+# C++
+cd test && pio test -f test_motion_detection -v
+
+# Python
+cd micro-espectre && pytest tests/test_validation_real_data.py -v
+```
+
+---
+
+## Current Results
+
+Results from C++ and Python tests follow the same trends (same algorithms, same data, same methodology), with small per-chip differences due to platform/runtime implementation details.
+
+| Chip | Algorithm | Recall | Precision | FP Rate | F1-Score |
+|------|-----------|--------|-----------|---------|----------|
+| ESP32-C3 | MVS Default | 96.1% | 99.9% | 0.1% | 98.0% |
+| ESP32-C3 | MVS + NBVI | 96.5% | 100.0% | 0.0% | 98.2% |
+| ESP32-C3 | ML | 99.6% | 100.0% | 0.0% | 99.8% |
+| ESP32-C5 | MVS Default | 99.7% | 99.2% | 1.1% | 99.5% |
+| ESP32-C5 | MVS + NBVI | 99.1% | 100.0% | 0.0% | 99.6% |
+| ESP32-C5 | ML | 100.0% | 100.0% | 0.0% | 100.0% |
+| ESP32-C6 | MVS Default | 98.1% | 100.0% | 0.0% | 99.0% |
+| ESP32-C6 | MVS + NBVI | 99.6% | 99.8% | 0.3% | 99.7% |
+| ESP32-C6 | ML | 100.0% | 100.0% | 0.0% | 100.0% |
+| ESP32-S3 | MVS Default | 99.8% | 98.0% | 2.8% | 98.9% |
+| ESP32-S3 | MVS + NBVI | 96.7% | 100.0% | 0.0% | 98.3% |
+| ESP32-S3 | ML | 99.8% | 100.0% | 0.0% | 99.9% |
+| ESP32 | MVS Default | 99.8% | 100.0% | 0.0% | 99.9% |
+| ESP32 | MVS + NBVI | 99.8% | 100.0% | 0.0% | 99.9% |
+| ESP32 | ML | 99.6% | 100.0% | 0.0% | 99.8% |
+
+**MVS Default**: Uses default subcarriers.
+**MVS + NBVI**: Uses NBVI auto-calibration (production case).
+**ML**: Neural network with chip-grouped CV, hard-positive mining, and Hampel filter.
+
+---
+
+## System Resources
+
+Resource usage benchmarks for ESPectre with full ESPHome stack (WiFi, API, OTA, debug sensors).
+
+Development YAML files (`-dev.yaml`) include ESPHome debug sensors for runtime monitoring of free heap, max block size, and loop time. 
+These sensors are available in Home Assistant for continuous monitoring.
+
+Additional performance logs are available at DEBUG level (`logger.level: DEBUG`):
+- `[resources]` - Free heap at startup and post-calibration
+- `[perf]` - Detection time per packet (logged every ~10 seconds)
+
+---
+
+### Flash Usage
+
+| Chip | Firmware Size | Flash Used | Free App Slot |
+|------|---------------|------------|---------------|
+| ESP32-C3 | 1370 KB | 73.8% | 486 KB |
+| ESP32-C5 | 1587 KB | 85.5% | 269 KB |
+| ESP32-C6 | 1539 KB | 82.9% | 317 KB |
+| ESP32-S3 | 1246 KB | 67.1% | 610 KB |
+
+Partition layout uses two app slots (`app0`/`app1`, 1.81 MB each) plus a small `otadata` partition for OTA metadata.
+ `Free App Slot` is the remaining space in one app slot after placing the firmware image.
+
+---
+
+### RAM Usage
+
+| Chip | Phase | Free Heap | Notes |
+|------|-------|-----------|-------|
+| ESP32-C3 | Post-setup | 179 KB | After ESPectre init |
+| ESP32-C3 | Post-calibration | 83 KB | After NBVI completes |
+| ESP32-C5 | Post-setup | 162 KB | After ESPectre init |
+| ESP32-C5 | Post-calibration | 71 KB | After NBVI completes |
+| ESP32-C6 | Post-setup | 272 KB | After ESPectre init |
+| ESP32-C6 | Post-calibration | 180 KB | After NBVI completes |
+| ESP32-S3 | Post-setup | 8425 KB | After ESPectre init (includes PSRAM heap) |
+| ESP32-S3 | Post-calibration | 8331 KB | After NBVI completes (includes PSRAM heap) |
+
+---
+
+### Detection Timing
+
+Time to process one CSI packet (feature extraction + detection, measured on hardware).
+At 100 pps, each packet has a 10 ms budget. 
+
+| Chip | Algorithm | Detection Time | CPU @ 100 pps |
+|------|-----------|----------------|---------------|
+| ESP32-C3 | MVS | ~440 µs | ~4.4% |
+| ESP32-C3 | ML | ~3400 µs | ~34% |
+| ESP32-C5 | MVS | ~220 µs | ~2.2% |
+| ESP32-C5 | ML | ~1500 µs | ~15% |
+| ESP32-C6 | MVS | ~250 µs | ~2.5% |
+| ESP32-C6 | ML | ~1900 µs | ~19% |
+| ESP32-S3 | MVS | ~150 µs | ~1.5% |
+| ESP32-S3 | ML | ~430 µs | ~4.3% |
+
+The worst-case path is ML on ESP32-C3 (~3.5 ms peak, ~35% CPU), which still leaves substantial budget for WiFi, ESPHome, and Home Assistant communication.
+
+**MVS**: Extracts a single feature (spatial turbulence) and its moving variance.
+
+**ML**: Extracts 12 statistical features from sliding window, then runs MLP inference (12 → 16 → 8 → 1 = 328 MACs). 
+The MLP itself is lightweight; most time is spent on feature extraction. 
+For ML architecture details, see [ALGORITHMS.md](micro-espectre/ALGORITHMS.md#architecture).
+
+---
+
+## Result History (ESP32-C6)
+
+| Date | Version | Dataset | Calibration | Algorithm | Recall | Precision | FP Rate | F1-Score |
+|------|---------|---------|-------------|-----------|--------|-----------|---------|----------|
+| 2026-03-29 | v2.8.0 | C6 |  -   | ML + Hampel | 100.0% | 100.0% | 0.0% | 100.0% |
+| 2026-03-29 | v2.8.0 | C6 | NBVI | MVS + Hampel| 99.6% | 99.8% | 0.3% | 99.7% |
+| 2026-03-11 | v2.6.1 | C6 |  -   | ML | 100.0% | 100.0% | 0.0% | 100.0% |
+| 2026-03-11 | v2.6.1 | C6 | NBVI | MVS | 99.3% | 100.0% | 0.0% | 99.7% |
+| 2026-03-08 | v2.6.0 | C6 |  -   | ML | 100.0% | 100.0% | 0.0% | 100.0% |
+| 2026-03-08 | v2.6.0 | C6 | NBVI | MVS | 99.9% | 98.4% | 2.3% | 99.2% |
+| 2026-02-15 | v2.5.0 | C6 |   -  | ML  | 99.9% | 100.0% | 0.0% | 99.9% |
+| 2026-02-15 | v2.5.0 | C6 | NBVI | MVS | 99.9% | 99.9% | 0.1% | 99.9% |
+| 2026-01-23 | v2.4.0 | C6 | NBVI | MVS | 99.8% | 96.5% | 3.6% | 98.1% |
+| 2025-12-27 | v2.3.0 | C6 | NBVI | MVS | 96.4% | 100.0% | 0.0% | 98.2% |
 
 ---
 

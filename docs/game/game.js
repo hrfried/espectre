@@ -4,9 +4,11 @@
  * A reaction game powered by ESPectre WiFi motion detection.
  * Stay still. Move fast. React to survive.
  * 
- * Communication: USB Serial (all ESP32 variants)
- * Protocol: "G<movement>,<threshold>\n" from ESP32
- *           "START\n" / "STOP\n" / "T:X.XX\n" from browser
+ * Communication: Web Bluetooth (desktop Chrome/Edge)
+ * Protocol:
+ *   - telemetry notify: [float32 movement, float32 threshold]
+ *   - sysinfo notify: text "key=value" lines + "END"
+ *   - control write: REQ_SYSINFO, SET_THRESHOLD:X.XX
  * 
  * Author: Francesco Pace <francesco.pace@gmail.com>
  * License: GPLv3
@@ -33,6 +35,13 @@ const EnemyTypes = [
     { name: 'VOID', maxTime: 250, points: 750, hp: 3, waves: [13, 14, 15] }
 ];
 
+// Game progression constants
+const MAX_WAVE = 15;
+const SPECTRES_PER_WAVE = 3;
+const MOVEMENT_SCALE_MAX = 10.0;
+const THRESHOLD_MIN = 0.0;
+const THRESHOLD_MAX = 10.0;
+
 // Hit strength categories based on power (movement / threshold * 0.3)
 const HitStrength = {
     NONE: { name: 'none', minPower: 0, damage: 0 },
@@ -42,19 +51,10 @@ const HitStrength = {
     CRITICAL: { name: 'critical', minPower: 3.0, damage: 3 }
 };
 
-// USB VID/PID for ESP32 variants
-const ESP32_USB_FILTERS = [
-    // Espressif USB JTAG/Serial (ESP32-C3, C5, C6)
-    { usbVendorId: 0x303A, usbProductId: 0x1001 },
-    // ESP32-S2/S3 CDC
-    { usbVendorId: 0x303A, usbProductId: 0x0002 },
-    // CP210x (common USB-UART bridge)
-    { usbVendorId: 0x10C4, usbProductId: 0xEA60 },
-    // CH340 (common USB-UART bridge)
-    { usbVendorId: 0x1A86, usbProductId: 0x7523 },
-    // FTDI (common USB-UART bridge)
-    { usbVendorId: 0x0403, usbProductId: 0x6001 }
-];
+const BLE_ESPECTRE_SERVICE_UUID = 'd33ff46b-2203-4775-bc6f-b3a2c36af8f0';
+const BLE_ESPECTRE_TELEMETRY_UUID = '119d5cac-48da-4bd9-bfc3-169805868258';
+const BLE_ESPECTRE_SYSINFO_UUID = 'c8c89ffa-c401-461f-9ffc-942fa04adfe3';
+const BLE_ESPECTRE_CONTROL_UUID = '33ed9214-a8d7-40e8-82d1-c82747dcdc71';
 
 // ==================== GAME CLASS ====================
 
@@ -62,16 +62,17 @@ class ESPectreGame {
     constructor() {
         // Game state
         this.state = GameState.IDLE;
-        this.inputMode = 'mouse'; // 'mouse' or 'serial'
+        this.inputMode = 'mouse'; // 'mouse', 'touch', or 'bluetooth'
+        this.isTouching = false;  // Touch state for mobile
         
-        // USB Serial connection
-        this.serialPort = null;
-        this.serialReader = null;
-        this.serialWriter = null;
-        this.readBuffer = '';
-        this.readableStreamClosed = null;
-        this.writableStreamClosed = null;
-        this.pingInterval = null;  // Keep-alive ping timer
+        // Web Bluetooth connection
+        this.bleDevice = null;
+        this.bleGattServer = null;
+        this.bleService = null;
+        this.bleTelemetryChar = null;
+        this.bleSysinfoChar = null;
+        this.bleControlChar = null;
+        this.isDisconnecting = false;
         
         // Stats
         this.score = 0;
@@ -81,6 +82,8 @@ class ESPectreGame {
         this.spectresDefeated = 0;
         this.bestTime = null;
         this.reactionTimes = [];
+        this.lives = 3;
+        this.maxLives = 3;
         
         // Current round
         this.currentEnemy = null;
@@ -89,10 +92,13 @@ class ESPectreGame {
         this.movement = 0;
         this.threshold = 1.0;  // From ESP32 config
         this.lastHitStrength = null;
-        this.isDraggingThreshold = false;  // Block threshold updates during slider drag
+        this.inputDecayTimer = null;  // Decay timer for mouse/touch input
         
         // System info from ESP32
         this.systemInfo = {};
+        
+        // Game timers (for cleanup on disconnect/home)
+        this.gameTimers = [];
         
         // Power stats
         this.totalPower = 0;
@@ -115,9 +121,8 @@ class ESPectreGame {
             btnConnect: document.getElementById('btn-connect'),
             btnMouse: document.getElementById('btn-mouse'),
             connectionStatus: document.getElementById('connection-status'),
-            inputMode: document.getElementById('input-mode'),
-            streak: document.getElementById('streak'),
             wave: document.getElementById('wave'),
+            waveProgress: document.getElementById('wave-progress'),
             bestTime: document.getElementById('best-time'),
             score: document.getElementById('score'),
             enemy: document.getElementById('enemy'),
@@ -128,23 +133,24 @@ class ESPectreGame {
             hitStrength: document.getElementById('hit-strength'),
             gameMessage: document.getElementById('game-message'),
             reactionTime: document.getElementById('reaction-time'),
-            // Global movement bar (single instance for all screens)
-            globalMovementBar: document.getElementById('global-movement-bar'),
+            // Vertical movement bar (always visible)
             movementFill: document.getElementById('movement-fill'),
-            movementThresholdMarker: document.getElementById('movement-threshold-marker'),
-            movementValue: document.getElementById('movement-value'),
-            thresholdValue: document.getElementById('threshold-value'),
+            // USB button in header
+            btnUsb: document.getElementById('btn-usb'),
+            // Life ghost display (in header, from components.js)
+            lifeGhost: document.getElementById('life-ghost'),
             // USB ready elements
             connectionPre: document.getElementById('connection-pre'),
             connectionReady: document.getElementById('connection-ready'),
             dividerMouse: document.getElementById('divider-mouse'),
             mouseHint: document.getElementById('mouse-hint'),
+            thresholdMarker: document.getElementById('threshold-marker'),
+            thresholdValue: document.getElementById('threshold-value'),
             usbDeviceName: document.getElementById('usb-device-name'),
             btnStartGame: document.getElementById('btn-start-game'),
             btnDisconnect: document.getElementById('btn-disconnect'),
             btnPlayAgain: document.getElementById('btn-play-again'),
             btnShare: document.getElementById('btn-share'),
-            btnHome: document.getElementById('btn-home'),
             btnMute: document.getElementById('btn-mute'),
             // System info elements
             systemInfo: document.getElementById('system-info'),
@@ -153,38 +159,73 @@ class ESPectreGame {
             infoSubcarriers: document.getElementById('info-subcarriers'),
             infoLowpass: document.getElementById('info-lowpass'),
             infoHampel: document.getElementById('info-hampel'),
-            infoTraffic: document.getElementById('info-traffic')
+            infoTraffic: document.getElementById('info-traffic'),
+            // Connection box and mobile hint
+            connectionBox: document.getElementById('connection-box'),
+            mobileUsbHint: document.getElementById('mobile-usb-hint')
         };
         
         // Audio system
         this.audioContext = null;
-        this.audioEnabled = true;
+        this.audioEnabled = false;  // Start muted, user enables with button
         this.audioInitialized = false;
         
         this.init();
     }
     
     init() {
+        // Enable scrolling on initial load (connection screen should be scrollable on mobile)
+        this.enableTouchGestures();
+        
         // Event listeners
         this.elements.btnConnect.addEventListener('click', () => this.connect());
         this.elements.btnMouse.addEventListener('click', () => this.startMouseMode());
+        
+        // Touch mode button (only if element exists)
+        this.elements.btnTouch = document.getElementById('btn-touch');
+        if (this.elements.btnTouch) {
+            this.elements.btnTouch.addEventListener('click', () => this.startTouchMode());
+        }
         this.elements.btnStartGame.addEventListener('click', () => this.startGame());
         this.elements.btnDisconnect.addEventListener('click', () => this.disconnect());
         this.elements.btnPlayAgain.addEventListener('click', () => this.restart());
         this.elements.btnShare.addEventListener('click', () => this.share());
-        this.elements.btnHome.addEventListener('click', () => this.goHome());
         
         // Mute button
         if (this.elements.btnMute) {
             this.elements.btnMute.addEventListener('click', () => this.toggleMute());
         }
         
+        // USB button (connect/disconnect)
+        if (this.elements.btnUsb) {
+            this.elements.btnUsb.addEventListener('click', () => this.toggleUsb());
+        }
+        
+        // Threshold marker drag
+        this.initThresholdMarker();
+        
         // Mouse input (for keyboard/mouse fallback mode)
         this.lastMouseX = 0;
         this.lastMouseY = 0;
         this.lastMouseTime = 0;
-        this.mouseVelocityDecay = null;
         document.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+        
+        // Touch input (for mobile)
+        this.lastTouchX = 0;
+        this.lastTouchY = 0;
+        this.lastTouchTime = 0;
+        this.touchDetected = false;  // Flag to detect touch capability at runtime
+        document.addEventListener('touchstart', (e) => {
+            // Dynamically detect touch and show swipe button if needed
+            if (!this.touchDetected) {
+                this.touchDetected = true;
+                this.checkBrowserSupport();  // Re-run to show correct buttons
+            }
+            this.handleTouchStart(e);
+        }, { passive: true });
+        document.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: true });
+        document.addEventListener('touchend', (e) => this.handleTouchEnd(e), { passive: true });
+        document.addEventListener('touchcancel', (e) => this.handleTouchEnd(e), { passive: true });
         
         // Escape key to go home
         document.addEventListener('keydown', (e) => {
@@ -192,15 +233,7 @@ class ESPectreGame {
                 this.goHome();
             }
         });
-        
-        // Stop streaming when page is closed/navigated away
-        // Using both beforeunload and pagehide for maximum browser compatibility
-        window.addEventListener('beforeunload', () => this.stopStreamingSync());
-        window.addEventListener('pagehide', () => this.stopStreamingSync());
-        
-        // Threshold slider drag
-        this.initThresholdSlider();
-        
+          
         // Check browser support
         this.checkBrowserSupport();
         
@@ -209,89 +242,145 @@ class ESPectreGame {
     }
     
     checkBrowserSupport() {
-        if (!('serial' in navigator)) {
-            this.showConnectionStatus(
-                'Web Serial not supported. Use Chrome or Edge.',
-                'error'
-            );
-            this.elements.btnConnect.disabled = true;
+        // Show touch button on mobile, mouse button on desktop
+        // Also check touchDetected flag for runtime detection (e.g., Chrome DevTools device mode)
+        const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0 || this.touchDetected;
+        const hasBluetooth = 'bluetooth' in navigator;
+        
+        // Update header controls (hide button if not supported or on mobile)
+        this.updateHeaderControls(hasBluetooth, isMobile);
+        
+        if (isMobile) {
+            // Mobile: hide USB connection box entirely, show swipe as primary
+            if (this.elements.connectionBox) {
+                this.elements.connectionBox.classList.add('mobile-hidden');
+            }
+            if (this.elements.dividerMouse) this.elements.dividerMouse.style.display = 'none';
+            if (this.elements.btnMouse) this.elements.btnMouse.style.display = 'none';
+            if (this.elements.mouseHint) this.elements.mouseHint.style.display = 'none';
+            if (this.elements.btnTouch) this.elements.btnTouch.style.display = '';
+            // Show mobile hint about USB option on desktop
+            if (this.elements.mobileUsbHint) this.elements.mobileUsbHint.style.display = '';
+        } else {
+            // Desktop: show USB connection box
+            if (this.elements.connectionBox) {
+                this.elements.connectionBox.classList.remove('mobile-hidden');
+            }
+            if (!hasBluetooth) {
+                this.showConnectionStatus(
+                    'Web Bluetooth not supported. Use Chrome or Edge desktop.',
+                    'error'
+                );
+                this.elements.btnConnect.disabled = true;
+            }
+            if (this.elements.btnMouse) this.elements.btnMouse.style.display = '';
+            if (this.elements.mouseHint) this.elements.mouseHint.style.display = '';
+            if (this.elements.btnTouch) this.elements.btnTouch.style.display = 'none';
+            if (this.elements.mobileUsbHint) this.elements.mobileUsbHint.style.display = 'none';
         }
     }
     
-    initThresholdSlider() {
-        const marker = this.elements.movementThresholdMarker;
-        if (!marker) return;
-        
-        let isDragging = false;
-        
-        const startDrag = (e) => {
-            // Only allow dragging when connected (not during active game phases)
-            if (this.state !== GameState.IDLE) return;
-            
-            isDragging = true;
-            this.isDraggingThreshold = true;  // Block incoming threshold updates
-            marker.classList.add('dragging');
-            e.preventDefault();
-        };
-        
-        const doDrag = (e) => {
-            if (!isDragging) return;
-            
-            const bar = marker.parentElement;
-            const rect = bar.getBoundingClientRect();
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            
-            // Calculate position as percentage (clamp to 2-98% for visual margin)
-            let percent = ((clientX - rect.left) / rect.width) * 100;
-            percent = Math.max(2, Math.min(98, percent));
-            
-            // Convert percent to threshold value: 0% = 0.5, 100% = 5.0
-            const minThreshold = 0.5;
-            const maxThreshold = 5.0;
-            const newThreshold = minThreshold + (percent / 100) * (maxThreshold - minThreshold);
-            
-            this.threshold = newThreshold;
-            
-            // Directly update marker position during drag (don't rely on updateMovement)
-            marker.style.left = percent + '%';
-            
-            // Update threshold value displays (movement bar and system info panel)
-            if (this.elements.thresholdValue) {
-                this.elements.thresholdValue.textContent = this.threshold.toFixed(2);
-            }
-            if (this.elements.infoThreshold) {
-                this.elements.infoThreshold.textContent = this.threshold.toFixed(2);
-            }
-        };
-        
-        const endDrag = async () => {
-            if (!isDragging) return;
-            isDragging = false;
-            marker.classList.remove('dragging');
-            
-            // Send threshold to ESP32 (format: T:X.XX)
-            if (this.inputMode === 'serial') {
-                await this.sendSerialCommand('T:' + this.threshold.toFixed(2));
-            }
-            
-            // Re-enable threshold updates after a short delay
-            // (allows the ESP32 to acknowledge the new threshold)
-            setTimeout(() => {
-                this.isDraggingThreshold = false;
-            }, 500);
-        };
-        
-        // Mouse events
-        marker.addEventListener('mousedown', startDrag);
-        document.addEventListener('mousemove', doDrag);
-        document.addEventListener('mouseup', endDrag);
-        
-        // Touch events
-        marker.addEventListener('touchstart', startDrag, { passive: false });
-        document.addEventListener('touchmove', doDrag, { passive: false });
-        document.addEventListener('touchend', endDrag);
+    updateHeaderControls(hasBluetooth, isMobile) {
+        // Hide device button if Web Bluetooth not supported or on mobile
+        if (this.elements.btnUsb) {
+            this.elements.btnUsb.style.display = (hasBluetooth && !isMobile) ? '' : 'none';
+        }
     }
     
+    // ==================== THRESHOLD MARKER ====================
+    
+    initThresholdMarker() {
+        const marker = this.elements.thresholdMarker;
+        const valueEl = this.elements.thresholdValue;
+        if (!marker) return;
+        
+        this.isDraggingThreshold = false;
+        this.thresholdMin = THRESHOLD_MIN;
+        this.thresholdMax = THRESHOLD_MAX;
+        
+        // Update marker position based on current threshold
+        this.updateThresholdMarkerPosition();
+        
+        // Mouse events on marker
+        marker.addEventListener('mousedown', (e) => this.startThresholdDrag(e));
+        document.addEventListener('mousemove', (e) => this.handleThresholdDrag(e));
+        document.addEventListener('mouseup', () => this.stopThresholdDrag());
+        
+        // Touch events on marker
+        marker.addEventListener('touchstart', (e) => this.startThresholdDrag(e), { passive: false });
+        document.addEventListener('touchmove', (e) => this.handleThresholdDrag(e), { passive: false });
+        document.addEventListener('touchend', () => this.stopThresholdDrag());
+        
+        // Also allow dragging from the value label
+        if (valueEl) {
+            valueEl.addEventListener('mousedown', (e) => this.startThresholdDrag(e));
+            valueEl.addEventListener('touchstart', (e) => this.startThresholdDrag(e), { passive: false });
+        }
+    }
+    
+    startThresholdDrag(e) {
+        if (e.cancelable) e.preventDefault();
+        this.isDraggingThreshold = true;
+        this.elements.thresholdMarker.classList.add('dragging');
+    }
+    
+    handleThresholdDrag(e) {
+        if (!this.isDraggingThreshold) return;
+        if (e.cancelable) e.preventDefault();
+        
+        const track = this.elements.thresholdMarker.parentElement;
+        const rect = track.getBoundingClientRect();
+        
+        // Get Y position (touch or mouse)
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        
+        // Calculate position as percentage from bottom (0% = bottom, 100% = top)
+        const relativeY = rect.bottom - clientY;
+        const percentage = Math.max(0, Math.min(100, (relativeY / rect.height) * 100));
+        
+        // Map percentage to threshold value (0-100% → 0-10, same scale as movement bar)
+        // Clamp to valid range (thresholdMin to thresholdMax)
+        const newThreshold = (percentage / 100) * this.thresholdMax;
+        this.threshold = Math.max(this.thresholdMin, Math.min(this.thresholdMax, Math.round(newThreshold * 10) / 10));
+        
+        // Update UI while dragging
+        this.updateThresholdMarkerPosition();
+    }
+    
+    stopThresholdDrag() {
+        if (!this.isDraggingThreshold) return;
+        this.isDraggingThreshold = false;
+        this.elements.thresholdMarker.classList.remove('dragging');
+        this.sendThresholdToDevice();
+    }
+    
+    updateThresholdMarkerPosition() {
+        const marker = this.elements.thresholdMarker;
+        const valueEl = this.elements.thresholdValue;
+        if (!marker) return;
+        
+        // Map threshold to percentage (0-100) using same scale as movement bar (0-10).
+        const percentage = (this.threshold / this.thresholdMax) * 100;
+        marker.style.bottom = `${percentage}%`;
+        
+        if (valueEl) {
+            valueEl.textContent = this.threshold.toFixed(1);
+        }
+        
+        // Also update system info threshold display
+        if (this.elements.infoThreshold) {
+            this.elements.infoThreshold.textContent = this.threshold.toFixed(2);
+        }
+    }
+
+    async sendThresholdToDevice() {
+        try {
+            await this.sendBleControlCommand(`SET_THRESHOLD:${this.threshold.toFixed(2)}`);
+        } catch (e) {
+            console.warn('Failed to send threshold command:', e);
+        }
+    }
+
     // ==================== SCREENS ====================
     
     showScreen(screenName) {
@@ -301,58 +390,56 @@ class ESPectreGame {
         this.screens[screenName].classList.add('active');
     }
     
-    // ==================== USB CONNECTION ====================
+    // ==================== BLUETOOTH CONNECTION ====================
     
     async connect() {
         try {
-            await this.connectSerial();
+            await this.connectBluetooth();
         } catch (e) {
-            console.error('Serial connection failed:', e);
-            if (e.message.includes('No port selected')) {
-                this.showConnectionStatus('No device selected', 'error');
-            } else if (e.message.includes('already open') || e.message.includes('in use')) {
+            console.error('Bluetooth connection failed:', e);
+            let errorType = 'unknown';
+            if (e.message.includes('No device selected')) {
                 this.showConnectionStatus(
-                    'Port in use! Close esphome logs or other serial monitors.',
+                    'No ESPectre device found. Make sure your ESP32 is flashed with ESPectre firmware.',
                     'error'
                 );
+                errorType = 'no_device_selected';
             } else {
                 this.showConnectionStatus('Connection failed: ' + e.message, 'error');
+                errorType = e.message.substring(0, 50);
             }
+            trackEvent('ble_connect_fail', { error: errorType });
         }
     }
     
-    async connectSerial() {
-        this.showConnectionStatus('Requesting serial port...', 'connecting');
-        
-        this.serialPort = await navigator.serial.requestPort({
-            filters: ESP32_USB_FILTERS
+    async connectBluetooth() {
+        this.showConnectionStatus('Requesting Bluetooth device...', 'connecting');
+
+        this.bleDevice = await navigator.bluetooth.requestDevice({
+            filters: [{ services: [BLE_ESPECTRE_SERVICE_UUID] }]
         });
-        
-        await this.serialPort.open({ baudRate: 115200 });
-        
-        this.inputMode = 'serial';
-        this.showConnectionStatus('Connected via USB Serial!', 'connected');
-        
-        // Setup reader/writer with TransformStreams for text encoding/decoding
-        const textDecoder = new TextDecoderStream();
-        this.readableStreamClosed = this.serialPort.readable.pipeTo(textDecoder.writable);
-        this.serialReader = textDecoder.readable.getReader();
-        
-        const textEncoder = new TextEncoderStream();
-        this.writableStreamClosed = textEncoder.readable.pipeTo(this.serialPort.writable);
-        this.serialWriter = textEncoder.writable.getWriter();
-        
-        // Start reading
-        this.readSerialLoop();
-        
-        // Send START command to begin receiving data
-        await this.sendSerialCommand('START');
-        
-        // Start ping keep-alive (every 2 seconds)
-        this.startPing();
-        
-        // Show USB ready screen with live movement preview
-        this.showUsbReady('ESP32 (Serial)');
+        this.bleDevice.addEventListener('gattserverdisconnected', () => this.handleBluetoothDisconnect());
+
+        this.bleGattServer = await this.bleDevice.gatt.connect();
+        this.bleService = await this.bleGattServer.getPrimaryService(BLE_ESPECTRE_SERVICE_UUID);
+        this.bleTelemetryChar = await this.bleService.getCharacteristic(BLE_ESPECTRE_TELEMETRY_UUID);
+        this.bleSysinfoChar = await this.bleService.getCharacteristic(BLE_ESPECTRE_SYSINFO_UUID);
+        this.bleControlChar = await this.bleService.getCharacteristic(BLE_ESPECTRE_CONTROL_UUID);
+
+        await this.bleTelemetryChar.startNotifications();
+        this.bleTelemetryChar.addEventListener('characteristicvaluechanged', (event) =>
+            this.handleTelemetryNotification(event)
+        );
+        await this.bleSysinfoChar.startNotifications();
+        this.bleSysinfoChar.addEventListener('characteristicvaluechanged', (event) =>
+            this.handleSysinfoNotification(event)
+        );
+
+        this.inputMode = 'bluetooth';
+        this.showConnectionStatus('Connected via Bluetooth!', 'connected');
+        trackEvent('ble_connect');
+        await this.sendBleControlCommand('REQ_SYSINFO');
+        this.showUsbReady('ESP32 (Bluetooth)');
     }
     
     showUsbReady(deviceName) {
@@ -366,11 +453,8 @@ class ESPectreGame {
         if (this.elements.usbDeviceName) {
             this.elements.usbDeviceName.textContent = deviceName;
         }
-        
-        // Show global movement bar
-        if (this.elements.globalMovementBar) {
-            this.elements.globalMovementBar.classList.remove('hidden');
-        }
+        // Update USB button in header
+        this.updateUsbButton();
         
         // Hide mouse mode section
         if (this.elements.dividerMouse) {
@@ -384,61 +468,56 @@ class ESPectreGame {
         }
     }
     
-    async readSerialLoop() {
-        try {
-            while (this.serialPort && this.serialPort.readable) {
-                const { value, done } = await this.serialReader.read();
-                if (done) break;
-                
-                // Accumulate data and parse lines
-                this.readBuffer += value;
-                const lines = this.readBuffer.split('\n');
-                this.readBuffer = lines.pop(); // Keep incomplete line
-                
-                for (const line of lines) {
-                    this.parseGameData(line.trim());
-                }
-            }
-        } catch (e) {
-            console.error('Serial read error:', e);
-            if (this.state !== GameState.IDLE) {
-                this.showConnectionStatus('Connection lost. Reconnecting...', 'connecting');
-                setTimeout(() => this.connect(), 2000);
-            }
+    handleTelemetryNotification(event) {
+        const dv = event.target.value;
+        if (!dv || dv.byteLength < 8) return;
+        const movement = dv.getFloat32(0, true);
+        const threshold = dv.getFloat32(4, true);
+        if (!Number.isFinite(movement) || !Number.isFinite(threshold)) return;
+        if (!this.isDraggingThreshold) {
+            this.threshold = threshold;
+            this.updateThresholdMarkerPosition();
         }
+        this.updateInput(movement);
     }
     
-    parseGameData(line) {
-        // Strip ANSI color codes from ESPHome logs
-        const cleanLine = line.replace(/\u001b\[[0-9;]*m/g, '');
-        
-        // Check for system info messages
-        // Format: [I][espectre:NNN][espectre]: [sysinfo] key=value or [sysinfo] END
-        const sysInfoMatch = cleanLine.match(/\[sysinfo\]\s+(\w+)(?:=(.+))?/);
-        if (sysInfoMatch) {
-            this.handleSystemInfo(sysInfoMatch[1], sysInfoMatch[2] || '');
+    handleSysinfoNotification(event) {
+        const value = event.target.value;
+        if (!value) return;
+        const line = new TextDecoder().decode(value.buffer);
+        if (!line) return;
+        const trimmed = line.trim();
+        if (trimmed === 'END') {
+            this.handleSystemInfo('END', '');
             return;
         }
-        
-        // Look for stream tag with data
-        // Format: [I][stream:NNN][espectre]: <movement>,<threshold>
-        // Example: [I][stream:075][espectre]: 0.08,1.00
-        const match = cleanLine.match(/\[stream:\d+\]\[.*?\]: ([\d.]+),([\d.]+)/);
-        if (!match) {
-            console.log(line);
+        const equalIdx = trimmed.indexOf('=');
+        if (equalIdx <= 0) return;
+        const key = trimmed.slice(0, equalIdx).trim();
+        const data = trimmed.slice(equalIdx + 1).trim();
+        this.handleSystemInfo(key, data);
+    }
+
+    async sendBleControlCommand(command) {
+        if (!this.bleControlChar) return;
+        const payload = new TextEncoder().encode(command);
+        if (typeof this.bleControlChar.writeValueWithResponse === 'function') {
+            await this.bleControlChar.writeValueWithResponse(payload);
             return;
         }
-        
-        const movement = parseFloat(match[1]);
-        const threshold = parseFloat(match[2]);
-        
-        if (!isNaN(movement) && !isNaN(threshold)) {
-            // Only update threshold if user is not dragging the slider
-            if (!this.isDraggingThreshold) {
-                this.threshold = threshold;
-            }
-            this.updateMovement(movement);
+        if (typeof this.bleControlChar.writeValueWithoutResponse === 'function') {
+            await this.bleControlChar.writeValueWithoutResponse(payload);
+            return;
         }
+        // Legacy fallback for older browser implementations.
+        await this.bleControlChar.writeValue(payload);
+    }
+
+    async handleBluetoothDisconnect() {
+        if (this.bleDevice && this.bleDevice.gatt && this.bleDevice.gatt.connected) {
+            return;
+        }
+        await this.disconnect();
     }
     
     handleSystemInfo(key, value) {
@@ -447,14 +526,22 @@ class ESPectreGame {
         // Update UI based on key
         switch (key) {
             case 'chip':
-                // Update device name in USB ready status (uppercase chip name)
+                // Update device name in ready status (uppercase chip name)
                 if (this.elements.usbDeviceName) {
                     this.elements.usbDeviceName.textContent = value.toUpperCase() + ' Connected';
                 }
+                // Track device type
+                trackEvent('ble_device_info', { chip: value.toUpperCase() });
                 break;
             case 'threshold':
                 if (this.elements.infoThreshold) {
                     this.elements.infoThreshold.textContent = value;
+                }
+                // Update local threshold and marker position
+                const thresholdValue = parseFloat(value);
+                if (!isNaN(thresholdValue)) {
+                    this.threshold = thresholdValue;
+                    this.updateThresholdMarkerPosition();
                 }
                 break;
             case 'window':
@@ -502,43 +589,6 @@ class ESPectreGame {
         }
     }
     
-    async sendSerialCommand(cmd) {
-        if (this.serialWriter) {
-            await this.serialWriter.write(cmd + '\n');
-        }
-    }
-    
-    startPing() {
-        // Send PING every 2 seconds to keep connection alive
-        this.stopPing();  // Clear any existing interval
-        this.pingInterval = setInterval(async () => {
-            try {
-                await this.sendSerialCommand('PING');
-            } catch (e) {
-                // Connection lost, stop pinging
-                this.stopPing();
-            }
-        }, 2000);
-    }
-    
-    stopPing() {
-        if (this.pingInterval) {
-            clearInterval(this.pingInterval);
-            this.pingInterval = null;
-        }
-    }
-    
-    /**
-     * Synchronously stop streaming - called on page unload.
-     * Uses fire-and-forget pattern since we can't await during beforeunload.
-     */
-    stopStreamingSync() {
-        if (this.serialWriter) {
-            // Fire-and-forget: we can't await during unload events
-            this.serialWriter.write('STOP\n').catch(() => {});
-        }
-    }
-    
     showConnectionStatus(message, type) {
         this.elements.connectionStatus.textContent = message;
         this.elements.connectionStatus.className = 'connection-status ' + type;
@@ -548,18 +598,35 @@ class ESPectreGame {
     
     startMouseMode() {
         this.inputMode = 'mouse';
+        this.startGame();
+    }
+    
+    startTouchMode() {
+        this.inputMode = 'touch';
         
-        // Show global movement bar
-        if (this.elements.globalMovementBar) {
-            this.elements.globalMovementBar.classList.remove('hidden');
-        }
+        // Reset touch tracking
+        this.lastTouchX = 0;
+        this.lastTouchY = 0;
+        this.lastTouchTime = 0;
         
         this.startGame();
     }
     
+    disableTouchGestures() {
+        // No-op: scroll control removed for simplicity
+    }
+    
+    enableTouchGestures() {
+        // Reset any stuck drag state that could block scrolling
+        this.isDraggingThreshold = false;
+        if (this.elements.thresholdMarker) {
+            this.elements.thresholdMarker.classList.remove('dragging');
+        }
+    }
+    
     handleMouseMove(e) {
-        // Only track in mouse mode
-        if (this.inputMode !== 'mouse') return;
+        // Ignore mouse input when device stream is connected
+        if (this.inputMode === 'bluetooth') return;
         
         const now = performance.now();
         const dt = now - this.lastMouseTime;
@@ -568,27 +635,13 @@ class ESPectreGame {
             const dx = e.clientX - this.lastMouseX;
             const dy = e.clientY - this.lastMouseY;
             const distance = Math.sqrt(dx * dx + dy * dy);
-            
-            // Convert to velocity (pixels per ms, scaled)
-            // Typical fast mouse movement: 500-1000 pixels in 16ms = 30-60 px/ms
-            // We want: threshold (1.0) reachable with moderate mouse speed
             const velocity = (distance / dt) * 0.3;
+            const movement = Math.min(velocity, MOVEMENT_SCALE_MAX);
             
-            // Update movement with new velocity (capped at 5.0 for super-fast moves)
-            const movement = Math.min(velocity, 5.0);
-            this.updateMovement(movement);
+            this.updateInput(movement);
             
-            // Clear existing decay timer
-            if (this.mouseVelocityDecay) {
-                clearTimeout(this.mouseVelocityDecay);
-            }
-            
-            // Decay movement to 0 if mouse stops (50ms timeout)
-            this.mouseVelocityDecay = setTimeout(() => {
-                if (this.inputMode === 'mouse') {
-                    this.updateMovement(0);
-                }
-            }, 50);
+            if (this.inputDecayTimer) clearTimeout(this.inputDecayTimer);
+            this.inputDecayTimer = setTimeout(() => this.updateInput(0), 50);
         }
         
         this.lastMouseX = e.clientX;
@@ -596,53 +649,73 @@ class ESPectreGame {
         this.lastMouseTime = now;
     }
     
-    updateMovement(value) {
-        this.movement = Math.max(0, Math.min(10, value));  // Can exceed 1.0
+    handleTouchStart(e) {
+        if (e.touches.length > 0) {
+            this.lastTouchX = e.touches[0].clientX;
+            this.lastTouchY = e.touches[0].clientY;
+            this.lastTouchTime = performance.now();
+            this.isTouching = true;
+        }
+    }
+    
+    handleTouchMove(e) {
+        // Ignore touch input when device stream is connected
+        if (this.inputMode === 'bluetooth') return;
         
-        // Skip visual updates during threshold slider drag to prevent flashing
-        if (this.isDraggingThreshold) return;
+        if (e.touches.length === 0) return;
         
-        // Fixed scale: 0% = 0, 100% = 5.0 for movement bar
-        const maxDisplay = 5.0;
-        const displayPercent = Math.min(100, (this.movement / maxDisplay) * 100);
+        const now = performance.now();
+        const dt = now - this.lastTouchTime;
         
-        // Threshold marker: 0% = 0.5, 100% = 5.0
-        const minThreshold = 0.5;
-        const maxThreshold = 5.0;
-        const thresholdPercent = ((this.threshold - minThreshold) / (maxThreshold - minThreshold)) * 100;
-        
-        this.elements.movementFill.style.width = displayPercent + '%';
-        
-        // Update threshold marker position
-        if (this.elements.movementThresholdMarker) {
-            this.elements.movementThresholdMarker.style.left = Math.max(2, Math.min(98, thresholdPercent)) + '%';
+        if (dt > 0 && this.lastTouchTime > 0) {
+            const dx = e.touches[0].clientX - this.lastTouchX;
+            const dy = e.touches[0].clientY - this.lastTouchY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const velocity = (distance / dt) * 0.3;
+            const movement = Math.min(velocity, MOVEMENT_SCALE_MAX);
+            
+            this.updateInput(movement);
+            
+            if (this.inputDecayTimer) clearTimeout(this.inputDecayTimer);
+            this.inputDecayTimer = setTimeout(() => this.updateInput(0), 50);
         }
         
-        // Update numeric values
-        if (this.elements.movementValue) {
-            this.elements.movementValue.textContent = this.movement.toFixed(2);
+        this.lastTouchX = e.touches[0].clientX;
+        this.lastTouchY = e.touches[0].clientY;
+        this.lastTouchTime = now;
+    }
+    
+    handleTouchEnd(e) {
+        // Ignore touch input when device stream is connected
+        if (this.inputMode === 'bluetooth') return;
+        
+        this.isTouching = false;
+        this.updateInput(0);
+        if (this.inputDecayTimer) {
+            clearTimeout(this.inputDecayTimer);
+            this.inputDecayTimer = null;
         }
-        if (this.elements.thresholdValue) {
-            this.elements.thresholdValue.textContent = this.threshold.toFixed(2);
+    }
+    
+    /**
+     * Unified input handler - updates movement bar and audio for all sources
+     */
+    updateInput(value) {
+        this.movement = Math.max(0, Math.min(MOVEMENT_SCALE_MAX, value));
+        
+        // Update vertical movement bar (height-based)
+        const percent = (this.movement / MOVEMENT_SCALE_MAX) * 100;
+        if (this.elements.movementFill) {
+            this.elements.movementFill.style.height = percent + '%';
         }
         
-        // Update bar color based on state
-        this.elements.movementFill.classList.remove('warning', 'danger', 'power');
+        // Update audio
+        this.updateAudioMovement(this.movement);
         
-        // Power indicator (movement > threshold)
-        if (this.movement > this.threshold) {
-            this.elements.movementFill.classList.add('power');
+        // Check game logic if in active game state
+        if (this.state === GameState.WAITING || this.state === GameState.TRIGGER) {
+            this.checkMovement();
         }
-        
-        if (this.state === GameState.WAITING && this.movement > this.threshold * this.cheatMultiplier) {
-            this.elements.movementFill.classList.add('warning');
-        }
-        if (this.movement > this.threshold * this.cheatMultiplier * 2) {
-            this.elements.movementFill.classList.add('danger');
-        }
-        
-        // Check game logic
-        this.checkMovement();
     }
     
     checkMovement() {
@@ -659,8 +732,8 @@ class ESPectreGame {
     // ==================== GAME LOGIC ====================
     
     startGame() {
-        // Initialize audio on first user interaction
-        this.initAudio();
+        // Block scroll during gameplay (for all input modes)
+        this.disableTouchGestures();
         
         // Reset stats
         this.score = 0;
@@ -670,6 +743,7 @@ class ESPectreGame {
         this.spectresDefeated = 0;
         this.bestTime = null;
         this.reactionTimes = [];
+        this.lives = this.maxLives;
         
         // Reset power stats
         this.totalPower = 0;
@@ -677,17 +751,14 @@ class ESPectreGame {
         this.criticalHits = 0;
         this.strongHits = 0;
         
+        // Track game start
+        trackEvent('game_start', { input_mode: this.inputMode });
+        
+        // Play game start sound
+        this.playSound('gamestart');
+        
         this.updateHUD();
         this.showScreen('game');
-        
-        // Update input mode display
-        if (this.inputMode === 'serial') {
-            this.elements.inputMode.innerHTML = '<i class="fab fa-usb"></i> USB';
-            this.elements.inputMode.classList.add('esp32');
-        } else {
-            this.elements.inputMode.innerHTML = '<i class="fas fa-mouse"></i> MOUSE';
-            this.elements.inputMode.classList.remove('esp32');
-        }
         
         // Reset mouse tracking
         this.lastMouseX = 0;
@@ -702,7 +773,6 @@ class ESPectreGame {
         this.state = GameState.IDLE;
         this.movement = 0;
         this.lastHitStrength = null;
-        this.updateMovement(0);
         
         // Hide enemy and message
         this.elements.enemy.classList.remove('visible', 'attacking', 'dissolved', 'dissolved-strong', 'dissolved-critical', 'corrupt');
@@ -747,11 +817,12 @@ class ESPectreGame {
         // Random delay before trigger (2-5 seconds)
         const delay = 2000 + Math.random() * 3000;
         
-        setTimeout(() => {
+        const timerId = setTimeout(() => {
             if (this.state === GameState.WAITING) {
                 this.trigger();
             }
         }, delay);
+        this.gameTimers.push(timerId);
     }
     
     updateEnemyHpBar() {
@@ -809,11 +880,12 @@ class ESPectreGame {
         this.playSound('spawn');
         
         // Timeout - player too slow
-        setTimeout(() => {
+        const timerId = setTimeout(() => {
             if (this.state === GameState.TRIGGER) {
                 this.handleTooSlow();
             }
         }, this.currentEnemy.maxTime);
+        this.gameTimers.push(timerId);
     }
     
     handleReaction() {
@@ -895,11 +967,12 @@ class ESPectreGame {
         // Shorter delay for multi-hit rounds (1-2.5 seconds)
         const delay = 1000 + Math.random() * 1500;
         
-        setTimeout(() => {
+        const timerId = setTimeout(() => {
             if (this.state === GameState.WAITING) {
                 this.trigger();
             }
         }, delay);
+        this.gameTimers.push(timerId);
     }
     
     handleWin(reactionTime, power, hitStrength) {
@@ -976,7 +1049,8 @@ class ESPectreGame {
         }
         
         // Next round
-        setTimeout(() => this.startRound(), 1500);
+        const timerId = setTimeout(() => this.startRound(), 1500);
+        this.gameTimers.push(timerId);
     }
     
     handleTooSlow() {
@@ -989,8 +1063,18 @@ class ESPectreGame {
         this.flashScreen('lose');
         this.playSound('lose');
         
-        // Game over
-        setTimeout(() => this.gameOver(), 1500);
+        // Lose a life
+        this.loseLife();
+        
+        if (this.lives <= 0) {
+            // Game over
+            const timerId = setTimeout(() => this.gameOver(), 1500);
+            this.gameTimers.push(timerId);
+        } else {
+            // Continue from current wave
+            const timerId = setTimeout(() => this.continueFromWave(), 1500);
+            this.gameTimers.push(timerId);
+        }
     }
     
     handleCheater() {
@@ -1007,18 +1091,45 @@ class ESPectreGame {
             document.querySelector('.game-arena').classList.remove('shake');
         }, 300);
         
-        // Game over
-        setTimeout(() => this.gameOver(), 1500);
+        // Lose a life
+        this.loseLife();
+        
+        if (this.lives <= 0) {
+            // Game over
+            const timerId = setTimeout(() => this.gameOver(), 1500);
+            this.gameTimers.push(timerId);
+        } else {
+            // Continue from current wave
+            const timerId = setTimeout(() => this.continueFromWave(), 1500);
+            this.gameTimers.push(timerId);
+        }
+    }
+    
+    continueFromWave() {
+        // Reset streak but keep score, wave, and spectresDefeated
+        this.streak = 0;
+        this.updateHUD();
+        
+        // Clear enemy state
+        this.elements.enemy.classList.remove('attacking', 'corrupt');
+        
+        // Start a new round at the current wave
+        this.startRound();
     }
     
     async gameOver() {
         this.state = GameState.GAME_OVER;
         
-        // Don't send STOP here - keep receiving movement data
-        // to show live movement bar on game over screen.
-        // STOP will be sent when user goes back home.
+        // Play game over sound
+        this.playSound('gameover');
+        
+        // Re-enable touch gestures for scrolling on results screen
+        this.enableTouchGestures();
+        
+        // Keep Bluetooth telemetry active to show live movement on game over screen.
         
         // Update results
+        document.getElementById('result-wave').textContent = this.wave;
         document.getElementById('result-spectres').textContent = this.spectresDefeated;
         document.getElementById('result-best').textContent = this.bestTime ? this.bestTime + 'ms' : '---';
         document.getElementById('result-streak').textContent = this.maxStreak;
@@ -1029,21 +1140,19 @@ class ESPectreGame {
         document.getElementById('result-avg-power').textContent = avgPower.toFixed(1) + 'x';
         document.getElementById('result-critical').textContent = this.criticalHits;
         
-        // Calculate grade
-        const grade = this.calculateGrade();
-        const gradeEl = document.getElementById('result-grade');
-        gradeEl.textContent = grade;
-        gradeEl.className = 'result-grade grade-' + grade.toLowerCase();
+        // Track game over with all stats
+        trackEvent('game_over', {
+            input_mode: this.inputMode,
+            score: this.score,
+            wave: this.wave,
+            spectres: this.spectresDefeated,
+            max_streak: this.maxStreak,
+            best_time: this.bestTime || 0,
+            critical_hits: this.criticalHits,
+            avg_power: avgPower.toFixed(1)
+        });
         
         this.showScreen('results');
-    }
-    
-    calculateGrade() {
-        if (this.spectresDefeated >= 15 && this.bestTime && this.bestTime < 200) return 'S';
-        if (this.spectresDefeated >= 10) return 'A';
-        if (this.spectresDefeated >= 5) return 'B';
-        if (this.spectresDefeated >= 2) return 'C';
-        return 'D';
     }
     
     // ==================== UI HELPERS ====================
@@ -1069,31 +1178,98 @@ class ESPectreGame {
     }
     
     updateHUD() {
-        this.elements.streak.textContent = this.streak;
-        this.elements.wave.textContent = this.wave;
+        // Wave shows current/max
+        this.elements.wave.textContent = this.wave + '/' + MAX_WAVE;
+        // Wave progress shows spectres defeated in current wave
+        const waveProgress = this.spectresDefeated % SPECTRES_PER_WAVE;
+        if (this.elements.waveProgress) {
+            this.elements.waveProgress.textContent = waveProgress + '/' + SPECTRES_PER_WAVE;
+        }
         this.elements.bestTime.textContent = this.bestTime ? this.bestTime + 'ms' : '---';
         this.elements.score.textContent = this.score;
+        this.updateLivesDisplay();
+    }
+    
+    updateLivesDisplay() {
+        if (this.elements.lifeGhost) {
+            this.elements.lifeGhost.dataset.lives = this.lives;
+        }
+    }
+    
+    loseLife() {
+        if (this.lives > 0) {
+            this.lives--;
+            
+            // Trigger hit animation
+            if (this.elements.lifeGhost) {
+                this.elements.lifeGhost.classList.add('losing');
+                setTimeout(() => {
+                    this.elements.lifeGhost.classList.remove('losing');
+                }, 600);
+            }
+            
+            this.updateLivesDisplay();
+        }
     }
     
     // ==================== ACTIONS ====================
     
+    clearGameTimers() {
+        // Cancel all pending game timers
+        for (const timerId of this.gameTimers) {
+            clearTimeout(timerId);
+        }
+        this.gameTimers = [];
+    }
+    
+    resetGameVisuals() {
+        // Reset enemy visual state
+        if (this.elements.enemy) {
+            this.elements.enemy.classList.remove('visible', 'attacking', 'dissolved', 'dissolved-strong', 'dissolved-critical', 'corrupt');
+        }
+        
+        // Reset life ghost to home state (no data-lives = white)
+        if (this.elements.lifeGhost) {
+            this.elements.lifeGhost.removeAttribute('data-lives');
+            this.elements.lifeGhost.classList.remove('losing');
+        }
+        
+        // Hide HP bar
+        if (this.elements.enemyHpBar) {
+            this.elements.enemyHpBar.classList.add('hidden');
+        }
+        
+        // Hide hit strength indicator
+        if (this.elements.hitStrength) {
+            this.elements.hitStrength.classList.add('hidden');
+        }
+        
+        // Hide reaction time
+        if (this.elements.reactionTime) {
+            this.elements.reactionTime.classList.add('hidden');
+        }
+    }
+    
     async restart() {
-        // Send START command
-        await this.sendSerialCommand('START');
         this.startGame();
     }
     
     share() {
         const avgPower = this.hitCount > 0 ? (this.totalPower / this.hitCount).toFixed(1) : '0.0';
         const text = `ESPectre - The Game\n\n` +
+            `Score: ${this.score}\n` +
+            `Wave: ${this.wave}/${MAX_WAVE}\n` +
             `Spectres Dissolved: ${this.spectresDefeated}\n` +
             `Best Reaction: ${this.bestTime ? this.bestTime + 'ms' : '---'}\n` +
-            `Max Streak: ${this.maxStreak}\n` +
-            `Avg Power: ${avgPower}x\n` +
-            `Critical Hits: ${this.criticalHits}\n` +
-            `Score: ${this.score}\n` +
-            `Grade: ${this.calculateGrade()}\n\n` +
+            `Avg Power: ${avgPower}x\n\n` +
             `Play at https://espectre.dev/game`;
+        
+        // Track share action
+        trackEvent('share', {
+            score: this.score,
+            wave: this.wave,
+            method: navigator.share ? 'native' : 'clipboard'
+        });
         
         if (navigator.share) {
             navigator.share({ text });
@@ -1108,24 +1284,24 @@ class ESPectreGame {
     }
     
     async goHome() {
-        // Go back to connect screen but keep USB connection active
+        // Cancel any pending game timers
+        this.clearGameTimers();
+        
+        // Reset all game visual elements
+        this.resetGameVisuals();
+        
+        // Go back to connect screen but keep device connection active
         this.state = GameState.IDLE;
         this.showScreen('connect');
         
-        // If still connected via serial, show the ready state
-        if (this.serialPort && this.inputMode === 'serial') {
+        // If still connected via Bluetooth, show the ready state
+        if (this.bleGattServer && this.bleGattServer.connected && this.inputMode === 'bluetooth') {
             // Keep connection-ready visible, movement bar stays visible
             return;
         }
         
-        // Mouse mode: reset to pre-connection state
-        this.inputMode = 'mouse';
+        // Mouse/touch mode: reset to pre-connection state
         this.showConnectionStatus('', '');
-        
-        // Hide global movement bar
-        if (this.elements.globalMovementBar) {
-            this.elements.globalMovementBar.classList.add('hidden');
-        }
         
         // Reset connection box to pre-connection state
         if (this.elements.connectionPre) {
@@ -1134,78 +1310,61 @@ class ESPectreGame {
         if (this.elements.connectionReady) {
             this.elements.connectionReady.classList.add('hidden');
         }
+        // Update USB button in header
+        this.updateUsbButton();
         
-        // Show mouse mode section again
+        // Show mouse/touch mode section again (based on device type)
         if (this.elements.dividerMouse) {
             this.elements.dividerMouse.style.display = '';
         }
-        if (this.elements.btnMouse) {
-            this.elements.btnMouse.style.display = '';
-        }
-        if (this.elements.mouseHint) {
-            this.elements.mouseHint.style.display = '';
-        }
         
-        // Clear mouse velocity decay timer
-        if (this.mouseVelocityDecay) {
-            clearTimeout(this.mouseVelocityDecay);
-            this.mouseVelocityDecay = null;
-        }
+        // Re-run device detection to show correct buttons
+        this.checkBrowserSupport();
+        
+        // Reset input mode and restore gestures
+        this.inputMode = 'mouse';
+        this.isTouching = false;
+        this.enableTouchGestures();
     }
     
     async disconnect() {
-        // Stop ping keep-alive
-        this.stopPing();
+        if (this.isDisconnecting) return;
+        this.isDisconnecting = true;
+
+        // Cancel any pending game timers
+        this.clearGameTimers();
         
-        // Send STOP command first
-        try {
-            await this.sendSerialCommand('STOP');
-        } catch (e) {}
+        // Reset all game visual elements
+        this.resetGameVisuals();
         
-        // Close Serial connection properly
-        // Order: cancel reader, close writer, wait for streams, close port
-        if (this.serialReader) {
+        if (this.bleTelemetryChar) {
             try {
-                await this.serialReader.cancel();
+                await this.bleTelemetryChar.stopNotifications();
             } catch (e) {}
-            this.serialReader = null;
+            this.bleTelemetryChar = null;
         }
-        
-        if (this.serialWriter) {
+        if (this.bleSysinfoChar) {
             try {
-                await this.serialWriter.close();
+                await this.bleSysinfoChar.stopNotifications();
             } catch (e) {}
-            this.serialWriter = null;
+            this.bleSysinfoChar = null;
         }
-        
-        // Wait for streams to finish
-        try {
-            if (this.readableStreamClosed) await this.readableStreamClosed.catch(() => {});
-            if (this.writableStreamClosed) await this.writableStreamClosed.catch(() => {});
-        } catch (e) {}
-        this.readableStreamClosed = null;
-        this.writableStreamClosed = null;
-        
-        if (this.serialPort) {
+        this.bleControlChar = null;
+        this.bleService = null;
+
+        if (this.bleGattServer && this.bleGattServer.connected) {
             try {
-                await this.serialPort.close();
+                this.bleGattServer.disconnect();
             } catch (e) {}
-            this.serialPort = null;
         }
-        
-        // Clear read buffer
-        this.readBuffer = '';
+        this.bleGattServer = null;
+        this.bleDevice = null;
         
         this.state = GameState.IDLE;
         this.inputMode = 'mouse';
         this.showScreen('connect');
         this.showConnectionStatus('Disconnected', '');
         
-        // Hide global movement bar
-        if (this.elements.globalMovementBar) {
-            this.elements.globalMovementBar.classList.add('hidden');
-        }
-        
         // Reset connection box to pre-connection state
         if (this.elements.connectionPre) {
             this.elements.connectionPre.classList.remove('hidden');
@@ -1213,7 +1372,9 @@ class ESPectreGame {
         if (this.elements.connectionReady) {
             this.elements.connectionReady.classList.add('hidden');
         }
-        
+        // Update USB button in header
+        this.updateUsbButton();
+
         // Hide system info panel and clear data
         if (this.elements.systemInfo) {
             this.elements.systemInfo.classList.add('hidden');
@@ -1230,6 +1391,7 @@ class ESPectreGame {
         if (this.elements.mouseHint) {
             this.elements.mouseHint.style.display = '';
         }
+        this.isDisconnecting = false;
     }
     
     // ==================== AUDIO SYSTEM ====================
@@ -1240,34 +1402,213 @@ class ESPectreGame {
         try {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
             this.audioInitialized = true;
+            
+            // Resume AudioContext if suspended (browser autoplay policy)
+            if (this.audioContext.state === 'suspended') {
+                this.audioContext.resume();
+            }
+            
+            // Initialize ambient system
+            this.initAmbientAudio();
         } catch (e) {
             console.warn('Web Audio not available:', e);
             this.audioEnabled = false;
         }
     }
     
+    // ==================== AMBIENT AUDIO SYSTEM ====================
+    
+    initAmbientAudio() {
+        if (!this.audioContext) return;
+        
+        const ctx = this.audioContext;
+        
+        // Create master gain for ambient sounds
+        this.ambientMasterGain = ctx.createGain();
+        this.ambientMasterGain.gain.value = 0;
+        this.ambientMasterGain.connect(ctx.destination);
+        
+        // Create a low-pass filter for ethereal effect
+        this.ambientFilter = ctx.createBiquadFilter();
+        this.ambientFilter.type = 'lowpass';
+        this.ambientFilter.frequency.value = 2000;
+        this.ambientFilter.Q.value = 1;
+        this.ambientFilter.connect(this.ambientMasterGain);
+        
+        // Ethereal oscillator (reacts to movement only)
+        this.etherealOsc = ctx.createOscillator();
+        this.etherealGain = ctx.createGain();
+        this.etherealOsc.type = 'sine';
+        this.etherealOsc.frequency.value = 220;
+        this.etherealGain.gain.value = 0; // Starts silent, only sounds on movement
+        this.etherealOsc.connect(this.etherealGain);
+        this.etherealGain.connect(this.ambientFilter);
+        this.etherealOsc.start();
+        
+        // LFO for vibrato on movement sound
+        this.lfo = ctx.createOscillator();
+        this.lfoGain = ctx.createGain();
+        this.lfo.type = 'sine';
+        this.lfo.frequency.value = 5; // Vibrato speed
+        this.lfoGain.gain.value = 8; // Vibrato depth in Hz
+        this.lfo.connect(this.lfoGain);
+        this.lfoGain.connect(this.etherealOsc.frequency);
+        this.lfo.start();
+        
+        // Ambient state
+        this.ambientActive = false;
+        this.ambientTargetVolume = 0.4; // Volume when there's movement
+        this.lastAmbientUpdate = 0;
+        
+        console.log('Ambient audio initialized (movement-reactive only)');
+    }
+    
+    startAmbient() {
+        if (!this.ambientMasterGain) {
+            console.warn('Ambient not initialized');
+            return;
+        }
+        
+        if (this.ambientActive) {
+            console.log('Ambient already active');
+            return;
+        }
+        
+        // Resume audio context if needed
+        if (this.audioContext.state === 'suspended') {
+            this.audioContext.resume().then(() => {
+                console.log('AudioContext resumed');
+            });
+        }
+        
+        this.ambientActive = true;
+        const ctx = this.audioContext;
+        const now = ctx.currentTime;
+        
+        console.log('Starting ambient audio, volume:', this.ambientTargetVolume);
+        
+        // Fade in ambient (faster: 1 second)
+        this.ambientMasterGain.gain.cancelScheduledValues(now);
+        this.ambientMasterGain.gain.setValueAtTime(0.001, now);
+        this.ambientMasterGain.gain.exponentialRampToValueAtTime(this.ambientTargetVolume, now + 1);
+    }
+    
+    stopAmbient() {
+        if (!this.ambientMasterGain || !this.ambientActive) return;
+        
+        this.ambientActive = false;
+        const ctx = this.audioContext;
+        const now = ctx.currentTime;
+        
+        // Fade out ambient
+        this.ambientMasterGain.gain.cancelScheduledValues(now);
+        this.ambientMasterGain.gain.setValueAtTime(this.ambientMasterGain.gain.value, now);
+        this.ambientMasterGain.gain.linearRampToValueAtTime(0, now + 1);
+    }
+    
+    /**
+     * Update audio based on movement input (mouse/touch/bluetooth).
+     * This is called for all input sources and provides theremin-like audio feedback.
+     * Initializes and starts ambient audio on first movement.
+     */
+    updateAudioMovement(movement) {
+        // Only process if audio is enabled and initialized
+        if (!this.audioEnabled || !this.audioInitialized) return;
+        
+        // Update the ambient sound
+        this.updateAmbient(movement);
+    }
+    
+    updateAmbient(movement) {
+        if (!this.ambientActive || !this.audioContext || !this.audioEnabled) return;
+        if (!this.etherealOsc || !this.etherealGain) return;
+        
+        const ctx = this.audioContext;
+        const now = ctx.currentTime;
+        
+        // Throttle updates (60fps max)
+        if (now - this.lastAmbientUpdate < 0.016) return;
+        this.lastAmbientUpdate = now;
+        
+        // Normalize movement (0-1 range, capped at 2x threshold)
+        const normalizedMovement = Math.min(movement / (this.threshold * 2), 1);
+        
+        // Only produce sound when there's movement
+        // Volume scales with movement intensity
+        const targetVolume = normalizedMovement * this.ambientTargetVolume;
+        this.etherealGain.gain.setTargetAtTime(targetVolume, now, 0.05);
+        
+        // Frequency rises with movement: 220Hz (A3) to 880Hz (A5)
+        const targetFreq = 220 + normalizedMovement * 660;
+        this.etherealOsc.frequency.setTargetAtTime(targetFreq, now, 0.08);
+        
+        // Vibrato speed increases with movement intensity
+        const vibratoSpeed = 3 + normalizedMovement * 8;
+        this.lfo.frequency.setTargetAtTime(vibratoSpeed, now, 0.1);
+        
+        // Filter brightness based on movement intensity (brighter = more movement)
+        const filterFreq = 1000 + normalizedMovement * 3000;
+        this.ambientFilter.frequency.setTargetAtTime(filterFreq, now, 0.15);
+    }
+    
     toggleMute() {
+        // Initialize audio on first unmute (user gesture required by browsers)
+        if (!this.audioInitialized) {
+            this.initAudio();
+        }
+        
         this.audioEnabled = !this.audioEnabled;
         
+        // Update button appearance
         if (this.elements.btnMute) {
             const icon = this.elements.btnMute.querySelector('i');
             if (icon) {
                 icon.className = this.audioEnabled ? 'fas fa-volume-up' : 'fas fa-volume-mute';
             }
-            this.elements.btnMute.classList.toggle('muted', !this.audioEnabled);
+            this.elements.btnMute.classList.toggle('unmuted', this.audioEnabled);
+            this.elements.btnMute.title = this.audioEnabled ? 'Mute sound' : 'Enable sound';
+        }
+        
+        // Start ambient if enabling for first time
+        if (this.audioEnabled && !this.ambientActive) {
+            this.startAmbient();
+        }
+        
+        // Mute/unmute ambient
+        if (this.ambientMasterGain && this.audioContext) {
+            const now = this.audioContext.currentTime;
+            this.ambientMasterGain.gain.setTargetAtTime(
+                this.audioEnabled && this.ambientActive ? this.ambientTargetVolume : 0,
+                now,
+                0.1
+            );
         }
     }
     
-    playSound(type, options = {}) {
+    toggleUsb() {
+        // If connected, disconnect; otherwise connect
+        if (this.bleGattServer && this.bleGattServer.connected) {
+            this.disconnect();
+        } else {
+            this.connect();
+        }
+    }
+    
+    updateUsbButton() {
+        if (this.elements.btnUsb) {
+            const isConnected = !!(this.bleGattServer && this.bleGattServer.connected);
+            this.elements.btnUsb.classList.toggle('connected', isConnected);
+            this.elements.btnUsb.title = isConnected ? 'Disconnect Bluetooth' : 'Connect Bluetooth';
+        }
+    }
+    
+    playSound(type) {
         if (!this.audioEnabled || !this.audioContext) return;
         
         // Resume audio context if suspended (browser autoplay policy)
         if (this.audioContext.state === 'suspended') {
             this.audioContext.resume();
         }
-        
-        const ctx = this.audioContext;
-        const now = ctx.currentTime;
         
         switch (type) {
             case 'move':
@@ -1321,6 +1662,38 @@ class ESPectreGame {
                 // Ethereal whoosh
                 this.playTone(200, 0.3, 'sine', 0.1);
                 setTimeout(() => this.playTone(300, 0.2, 'sine', 0.08), 100);
+                break;
+                
+            case 'gameover':
+                // Dramatic descending minor chord sequence
+                this.playTone(392, 0.4, 'sine', 0.25);      // G4
+                this.playTone(466, 0.4, 'sine', 0.2);       // Bb4 (minor third)
+                setTimeout(() => {
+                    this.playTone(330, 0.4, 'sine', 0.25);  // E4
+                    this.playTone(392, 0.4, 'sine', 0.2);   // G4
+                }, 300);
+                setTimeout(() => {
+                    this.playTone(262, 0.5, 'sine', 0.25);  // C4
+                    this.playTone(311, 0.5, 'sine', 0.2);   // Eb4 (minor)
+                }, 600);
+                setTimeout(() => {
+                    this.playTone(196, 0.8, 'sine', 0.3);   // G3 - final low note
+                    this.playTone(233, 0.8, 'sine', 0.15);  // Bb3
+                }, 900);
+                break;
+                
+            case 'gamestart':
+                // Energetic ascending fanfare
+                this.playTone(262, 0.1, 'triangle', 0.25);  // C4
+                setTimeout(() => this.playTone(330, 0.1, 'triangle', 0.25), 80);   // E4
+                setTimeout(() => this.playTone(392, 0.1, 'triangle', 0.25), 160);  // G4
+                setTimeout(() => this.playTone(523, 0.2, 'triangle', 0.3), 240);   // C5 - hold
+                setTimeout(() => {
+                    // Final power chord
+                    this.playTone(523, 0.3, 'sawtooth', 0.2);  // C5
+                    this.playTone(659, 0.3, 'triangle', 0.15); // E5
+                    this.playTone(784, 0.3, 'sine', 0.1);      // G5
+                }, 400);
                 break;
         }
     }

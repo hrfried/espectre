@@ -14,8 +14,8 @@ Micro-ESPectre is part of a **two-platform strategy**:
 
 | Platform | Purpose | Target Users |
 |----------|---------|--------------|
-| **[ESPectre](https://github.com/francescopace/espectre)** (ESPHome) | Production deployment | Smart home users, Home Assistant |
-| **Micro-ESPectre** (Python) | R&D and prototyping | Researchers, developers, academics |
+| **[ESPectre](https://github.com/francescopace/espectre)** (C++) | Production deployment | Smart home users, Home Assistant |
+| **[Micro-ESPectre](https://github.com/francescopace/espectre/tree/main/micro-espectre)** (Python) | R&D and prototyping | Researchers, developers, academics |
 
 **Why MQTT instead of Native API?**
 Micro-ESPectre uses MQTT for maximum flexibility - it's not tied to Home Assistant and can integrate with:
@@ -56,37 +56,27 @@ This fork makes CSI-based applications accessible to Python developers and enabl
 
 | Feature | ESPHome (C++) | Python (MicroPython) | Status |
 |---------|---------------|----------------------|--------|
-| **Core Algorithm** |
-| MVS Segmentation | ✅ | ✅ | Aligned |
-| Spatial Turbulence | ✅ | ✅ | Aligned |
-| Moving Variance | ✅ | ✅ | Aligned |
-| **Gain Lock (AGC/FFT)** |
-| Gain Lock | ✅ | ✅ | Aligned (S3/C3/C5/C6) |
-| Read AGC/FFT values | ✅ | ✅ | Implemented |
-| Force AGC/FFT values | ✅ | ✅ | Implemented |
-| **WiFi Traffic Generator** |
-| Traffic Generation | ✅ | ✅ | Implemented |
-| Configurable Rate | ✅ | ✅ | Implemented |
-| **Configuration** |
-| YAML Configuration | ✅ | ❌ | ESPHome only |
-| MQTT Commands | ❌ | ✅ | Micro-ESPectre only |
-| Runtime Config | ✅ (via HA) | ✅ (via MQTT) | Different methods |
-| **Storage** |
-| NVS Persistence | ✅ | ✅ | Implemented |
-| Auto-save on config change | ✅ | ✅ | Implemented |
-| Auto-load on startup | ✅ | ✅ | Implemented |
-| **Automatic Subcarrier Selection** |
-| NBVI Algorithm | ✅ | ✅ | Implemented |
-| Percentile-based Detection | ✅ | ✅ | Implemented |
-| Noise Gate | ✅ | ✅ | ✅ Implemented |
-| Spectral De-correlation | ✅ | ✅ | Implemented |
+| **Motion Detection** |
+| MVS Detector | ✅ | ✅ | Moving Variance Segmentation (default) |
+| ML Detector | ✅ | ✅ | Neural Network (experimental) |
+| ML Features (12) | ✅ | ✅ | mean, std, max, min, zcr, skewness, kurtosis, entropy, autocorr, mad, slope, delta |
+| **Calibration (MVS only)** |
+| NBVI | ✅ | ✅ | 12 non-consecutive subcarriers |
+| Adaptive Threshold | ✅ | ✅ | P95 × 1.1 of baseline variance |
+| **Gain Lock** |
+| AGC/FFT Lock | ✅ | ✅ | Hardware gain stabilization (S3/C3/C5/C6) |
+| CV Normalization | ✅ | ✅ | Gain-invariant normalization when lock skipped |
 | **Filters** |
-| Low-Pass Filter | ✅ | ✅ | Butterworth 1st order, reduces high-freq noise (11 Hz default) |
-| Hampel Filter | ✅ | ✅ | Outlier removal, applied to turbulence (disabled by default) |
-| **CSI Features** |
-| `features_enable` | ❌ | ✅ | `ENABLE_FEATURES = True` in config.py |
-| CSI Features | ❌ | ✅ | entropy_turb, iqr_turb, variance_turb, skewness, kurtosis |
-| Feature Extraction | ❌| ✅ | Publish-time calculation (no buffer, 92% memory saved) |
+| Low-Pass | ✅ | ✅ | Butterworth 1st order, 11 Hz cutoff (disabled by default) |
+| Hampel | ✅ | ✅ | MAD-based outlier removal (enabled by default) |
+| **Traffic Generator** |
+| DNS Method | ✅ | ✅ | UDP packets to gateway (default) |
+| Ping Method | ✅ | ❌ | ICMP packets (ESPHome only) |
+| Configurable Rate | ✅ | ✅ | 1-1000 pps |
+| **Configuration** |
+| YAML | ✅ | ❌ | ESPHome declarative config |
+| MQTT Commands | ❌ | ✅ | Runtime parameter changes |
+| Runtime Config | ✅ (via HA) | ✅ (via MQTT) | Different methods |
 
 ### Performance Comparison
 
@@ -107,23 +97,19 @@ For detailed performance metrics (confusion matrix, F1-score, benchmarks), see [
 **Use Micro-ESPectre (Python) if you want:**
 - Quick prototyping and experimentation
 - Easy deployment and updates (~5 seconds)
-- Core motion detection functionality
 - Simple Python-based development
 - MQTT-based runtime configuration
-- Automatic subcarrier selection
 
 **Use ESPectre (ESPHome) if you need:**
 - Native Home Assistant integration (auto-discovery)
 - Maximum performance and efficiency
-- Advanced CSI feature extraction
-- Multiple filtering algorithms
 - Production-grade stability
 - YAML-based configuration
 
 ## Requirements
 
 ### Hardware
-- ESP32 with CSI support (S3/C6 recommended, other variants supported)
+- ESP32 with CSI support (ESP32, C3, S3, C6 supported)
 - 2.4GHz WiFi router
 
 ### Software
@@ -145,8 +131,9 @@ The `me` CLI provides these essential commands:
 | `deploy` | Deploy Python code to device | `./me deploy` |
 | `run` | Run the application | `./me run` |
 | `stream` | Stream raw CSI data via UDP | `./me stream --ip 192.168.1.100` |
-| `collect` | Collect labeled CSI data for ML | `./me collect --label wave --duration 30` |
+| `collect` | Collect labeled CSI data for ML training | `./me collect --label baseline --duration 10` |
 | `verify` | Verify firmware installation | `./me verify` |
+| `ui` | Open web monitoring interface in browser | `./me ui` |
 | *(interactive)* | Interactive MQTT control | `./me` |
 
 ### Key Features
@@ -182,13 +169,27 @@ If you've already set up the main ESPectre project, you can reuse that virtual e
 git clone https://github.com/francescopace/espectre.git
 cd espectre/micro-espectre
 
+# Verify Python version (3.12 required)
+python3 --version  # Should show Python 3.12.x
+
 # Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On macOS/Linux
-# venv\Scripts\activate   # On Windows
+python3.12 -m venv venv      # macOS/Linux — use python3 if pyenv auto-selected 3.12
+source venv/bin/activate     # On macOS/Linux
+# venv\Scripts\activate      # On Windows
 
 # Your prompt should now show (venv) prefix
 ```
+
+> **Tip — Python 3.12 not found?**
+>
+> **macOS (Homebrew):** `brew install python@3.12`
+>
+> **pyenv (any OS):**
+> ```bash
+> pyenv install 3.12
+> # The .python-version file in this directory selects it automatically
+> ```
+> After installing, re-run `python3.12 -m venv venv`.
 
 **Why use a virtual environment?**
 - Isolates project dependencies from system Python
@@ -226,6 +227,7 @@ The CLI will:
 **Manual mode** (if auto-detect fails):
 ```bash
 # Specify chip and/or port manually
+# Supported chips: esp32, c3, s3, c6
 ./me flash --chip s3 --port /dev/ttyUSB0 --erase
 ```
 
@@ -290,34 +292,6 @@ mqtt:
       device_class: motion
 ```
 
-## Additional Commands
-
-### Data Collection & ML
-
-For CSI streaming, labeled data collection, and ML dataset creation:
-
-```bash
-# Stream CSI to PC
-./me stream --ip 192.168.1.100
-
-# Collect labeled samples
-./me collect --label idle --duration 60
-./me collect --label wave --duration 30
-./me collect --info
-```
-
-👉 See [ML_DATA_COLLECTION.md](ML_DATA_COLLECTION.md) for complete guide.
-
-### Update Code (during development)
-
-```bash
-# Deploy updated code (auto-detect port)
-./me deploy
-
-# Run application (auto-detect port)
-./me run
-```
-
 ## Project Structure
 
 ```
@@ -344,7 +318,7 @@ micro-espectre/
 - **`src/csi_streamer.py`**: UDP streaming module for real-time CSI data
 - **`tests/`**: Pytest test suite for all core modules
 - **`tools/`**: Analysis scripts for algorithm development and validation
-- **`tools/csi_utils.py`**: CSI utilities (receiver, collector, MVS detector) for PC-side processing
+- **`tools/csi_utils.py`**: CSI utilities (receiver, collector, detectors) for PC-side processing
 - **`ML_DATA_COLLECTION.md`**: Guide for collecting labeled CSI datasets for ML
 
 ## Testing
@@ -370,28 +344,23 @@ pytest tests/test_filters.py -v
 pytest tests/test_segmentation.py::TestStateMachine -v
 ```
 
-### Test Coverage
+### Test Suites
 
-The test suite covers all core modules:
-
-| Module | Test File | Coverage |
-|--------|-----------|----------|
-| `config.py` | `test_config.py` | 100% |
-| `filters.py` | `test_filters.py` | 100% |
-| `features.py` | `test_features.py` | 99% |
-| `segmentation.py` | `test_segmentation.py`, `test_segmentation_additional.py` | 90% |
-| `nbvi_calibrator.py` | `test_nbvi_calibrator.py`, `test_nbvi_calibrator_additional.py` | 94% |
-| `nvs_storage.py` | `test_nvs_storage.py` | 95% |
-| `mqtt/handler.py` | `test_mqtt.py` | 88% |
-| `mqtt/commands.py` | `test_mqtt.py` | 94% |
-| `traffic_generator.py` | `test_traffic_generator.py` | 91% |
-
-Additional validation tests:
-- `test_running_variance.py`: Compares O(1) running variance with two-pass algorithm
-- `test_optimization_equivalence.py`: Validates optimization correctness
-- `test_validation_real_data.py`: Validates algorithms with real CSI data (baseline/movement)
-
-**Total: 324 tests, 94% coverage** (MicroPython-only modules excluded)
+| Suite | Type | Data | Focus |
+|-------|------|------|-------|
+| `test_config` | Unit | — | Configuration constants, guard bands |
+| `test_filters` | Unit | Synthetic | Hampel, low-pass filters |
+| `test_features` | Unit | Synthetic | Feature extraction (entropy, skewness, kurtosis) |
+| `test_segmentation` | Unit | Synthetic | MVS state machine, variance calculation |
+| `test_segmentation_additional` | Unit | Synthetic | Additional segmentation edge cases |
+| `test_nbvi_calibrator` | Unit | **Real** | NBVI subcarrier selection |
+| `test_ml_detector` | Unit | **Real** | ML detector, features, inference |
+| `test_ml_inference` | Unit | **Real** | ML inference matches C++ reference |
+| `test_mqtt` | Unit | Synthetic | MQTT handler and commands |
+| `test_traffic_generator` | Unit | Synthetic | Rate limiting, error handling |
+| `test_running_variance` | Unit | Synthetic | O(1) vs two-pass variance comparison |
+| `test_optimization_equivalence` | Unit | Synthetic | Optimization correctness |
+| `test_validation_real_data` | Integration | **Real** | End-to-end with real CSI data |
 
 ### CI Integration
 
@@ -399,33 +368,80 @@ Tests run automatically on every push/PR via GitHub Actions. See `.github/workfl
 
 ## Configuration
 
-### Segmentation Parameters (config.py)
+All configuration is in `config.py`. The detection pipeline follows this order:
 
-```python
-SEG_WINDOW_SIZE = 50       # Moving variance window (10-200 packets)
-SEG_THRESHOLD = 1.0        # Motion detection threshold (0.0-10.0)
-ENABLE_FEATURES = False    # Enable/disable feature extraction
-
-# Filter Configuration (all disabled by default)
-ENABLE_LOWPASS_FILTER = False  # Low-pass filter (reduces high-freq noise)
-LOWPASS_CUTOFF = 11.0          # Cutoff frequency in Hz (11 Hz optimal)
-ENABLE_HAMPEL_FILTER = False   # Hampel filter (outlier removal)
-HAMPEL_WINDOW = 7
-HAMPEL_THRESHOLD = 4.0
-
-# Normalization (always enabled for cross-device consistency)
-# If baseline > 0.25: scale = 0.25 / baseline_variance (attenuate)
-# If baseline ≤ 0.25: scale = 1.0 (no amplification)
-# Note: If NBVI calibration fails, normalization is still applied using default subcarriers
+```
+Boot → Gain Lock → Calibration → Detection Loop (with optional filters)
 ```
 
-For detailed parameter tuning guide, see [TUNING.md](../TUNING.md).
+### 1. Gain Lock (Hardware Stabilization)
+
+Locks AGC/FFT gain values for stable CSI amplitudes.
+
+```python
+GAIN_LOCK_MODE = "auto"       # "auto", "enabled", or "disabled"
+GAIN_LOCK_MIN_SAFE_AGC = 30   # Minimum safe AGC (used in auto mode)
+```
+
+| Mode | Description |
+|------|-------------|
+| `auto` (default) | Lock gain, skip if signal too strong (AGC < 30). Uses CV normalization when skipped. |
+| `enabled` | Always force gain lock (may freeze if too close to AP) |
+| `disabled` | Never lock gain. Uses CV normalization for stable detection. |
+
+### 2. Detection Algorithm
+
+Choose the motion detection algorithm.
+
+```python
+DETECTION_ALGORITHM = "mvs"   # "mvs" (default) or "ml"
+```
+
+| Algorithm | Method | Calibration | Boot Time |
+|-----------|--------|-------------|-----------|
+| **MVS** (default) | Moving Variance Segmentation of Turbulence | Subcarriers + Threshold | ~10s |
+| **ML** | Neural Network (12 features → MLP) | **None** (fixed subcarriers) | **~3s** |
+
+### 3. Calibration Algorithm (MVS only)
+
+Selects which subcarriers to use for detection.
+
+```python
+CALIBRATION_ALGORITHM = "nbvi"  # NBVI is the sole calibration algorithm
+```
+
+| Algorithm | Selection | Best For |
+|-----------|-----------|----------|
+| **NBVI** | 12 non-consecutive subcarriers | Spectral diversity, resilient to interference |
+
+### 4. Detection Parameters (MVS only)
+
+```python
+SEG_THRESHOLD = "auto"     # "auto" (adaptive), "min" (max baseline), or 0.0-10.0
+SEG_WINDOW_SIZE = 75       # Moving variance window (10-200 packets)
+```
+
+### 5. Filters (Optional, MVS and ML)
+
+Applied to turbulence values before motion detection. Both MVS and ML detectors support these filters.
+
+```python
+# Low-pass filter (reduces high-frequency noise)
+ENABLE_LOWPASS_FILTER = False
+LOWPASS_CUTOFF = 11.0          # Cutoff frequency in Hz
+
+# Hampel filter (outlier/spike removal)
+ENABLE_HAMPEL_FILTER = True
+HAMPEL_WINDOW = 7
+HAMPEL_THRESHOLD = 5.0
+```
+
+For detailed parameter tuning, see [TUNING.md](../TUNING.md).
 
 ### Published Data (MQTT Payload)
 
 The system publishes JSON payloads to the configured MQTT topic (default: `home/espectre/node1`):
 
-**Basic payload** (always published):
 ```json
 {
   "movement": 0.0234,            // Current moving variance
@@ -438,121 +454,54 @@ The system publishes JSON payloads to the configured MQTT topic (default: `home/
 }
 ```
 
-**Extended payload** (when `ENABLE_FEATURES = True`):
-```json
-{
-  "movement": 1.2345,
-  "threshold": 1.0,
-  "state": "motion",
-  "packets_processed": 100,
-  "packets_dropped": 0,
-  "pps": 105,
-  "timestamp": 1700000000,
-  
-  "features": {
-    "entropy_turb": 2.97,
-    "iqr_turb": 4.56,
-    "variance_turb": 4.71,
-    "skewness": 0.23,
-    "kurtosis": -1.16
-  },
-  
-  "confidence": 0.85,
-  
-  "triggered": ["entropy_turb", "iqr_turb", "variance_turb", "skewness"]
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `features` | CSI features calculated at publish time |
-| `confidence` | Detection confidence (0.0-1.0) based on weighted feature voting |
-| `triggered` | List of features that exceeded their motion thresholds |
-
-**Top 5 Features (publish-time, no buffer needed, tested with SEG_WINDOW_SIZE=50):**
-| Feature | Fisher J | Type | Description |
-|---------|----------|------|-------------|
-| `iqr_turb` | 3.56 | Turbulence buffer | IQR approximation (range × 0.5) |
-| `skewness` | 2.54 | W=1 (current pkt) | Distribution asymmetry |
-| `kurtosis` | 2.24 | W=1 (current pkt) | Distribution tailedness |
-| `entropy_turb` | 2.08 | Turbulence buffer | Shannon entropy of turbulence distribution |
-| `variance_turb` | 1.21 | Turbulence buffer | Moving variance (already calculated by MVS!) |
-
-**Confidence interpretation:**
-| Confidence | Meaning |
-|------------|---------|
-| 0.0 - 0.3 | Very likely IDLE |
-| 0.3 - 0.5 | Uncertain / slight movement |
-| 0.5 - 0.7 | Probable movement |
-| 0.7 - 1.0 | Confident motion detection |
-
 ## Analysis Tools
 
 The `tools/` directory contains Python scripts for CSI data analysis and algorithm validation.
 
-```bash
-# Collect CSI data samples
-./me run --collect-baseline
-./me run --collect-movement
-
-# Run analysis
-cd tools
-python 2_analyze_system_tuning.py --quick
-python 3_analyze_moving_variance_segmentation.py --plot
-```
-
-**9 analysis scripts** covering:
-- Raw data visualization and system tuning
-- MVS algorithm validation and optimization
-- I/Q constellation analysis
-- Detection methods comparison
-- CSI features extraction
-
 See [tools/README.md](tools/README.md) for complete script documentation.
 
-## Automatic Subcarrier Selection (NBVI)
+## Automatic Subcarrier Selection
 
-Micro-ESPectre implements the **NBVI (Normalized Baseline Variability Index)** algorithm for automatic subcarrier selection, achieving **F1=98.2%** with **zero manual configuration**.
+Micro-ESPectre implements automatic subcarrier selection using the **NBVI** (Normalized Band Variance Index) algorithm:
 
-> ⚠️ **IMPORTANT**: Keep the room **quiet and still** for 10 seconds after device boot. The auto-calibration runs during this time and movement will affect detection accuracy.
+- **NBVI**: Selects 12 non-consecutive subcarriers based on baseline variability index
 
-For complete NBVI algorithm documentation, see [ALGORITHMS.md](ALGORITHMS.md#nbvi-automatic-subcarrier-selection).
+Both algorithms achieve high performance (>90% recall, <15% FP rate) with **zero manual configuration**.
 
-## Machine Learning & Advanced Applications
+> ⚠️ **IMPORTANT**: Keep the room **quiet and still** after device boot during calibration:
+> - **MVS**: ~10 seconds (gain lock + band calibration)
+> - **ML**: ~3 seconds (gain lock only, no band calibration needed)
 
-Micro-ESPectre is the **R&D platform** for advanced CSI-based applications. While the core focuses on motion detection using mathematical algorithms (MVS + NBVI), the platform provides infrastructure for ML-based features planned for release 3.x:
+For complete algorithm documentation, see [ALGORITHMS.md](ALGORITHMS.md#subcarrier-selection-nbvi).
 
-- **Gesture recognition**
-- **Human Activity Recognition (HAR)**
-- **People counting**
-- **Localization and tracking**
+## Machine Learning
 
-### Getting Started with ML
+Micro-ESPectre includes a **neural network-based motion detector** as an experimental feature.
 
-```bash
-# Stream CSI data to PC
-./me stream --ip 192.168.1.100
+### ML Detector (Experimental)
 
-# Collect labeled samples
-./me collect start idle 60
-./me collect start wave 30
-```
+The ML detector (`DETECTION_ALGORITHM = "ml"`) is a compact MLP trained on real CSI data. It extracts 12 statistical features from turbulence patterns and outputs a motion probability.
 
-👉 **[ML_DATA_COLLECTION.md](ML_DATA_COLLECTION.md)** - Complete guide for data collection, labeling, and dataset format.
+| Aspect | Details |
+|--------|---------|
+| Architecture | MLP (12 → 16 → 8 → 1) |
+| Input | 12 features from 75-packet window |
+| Output | Probability (0.0 - 1.0), threshold at 0.5 |
+| Filters | Supports low-pass and Hampel filters (same as MVS) |
+| Performance | See [PERFORMANCE.md](../PERFORMANCE.md) for per-chip results |
 
-### Available Features
+**Documentation**:
+- [ALGORITHMS.md](ALGORITHMS.md#ml-neural-network-detector) - Architecture, features, performance
+- [ML_DATA_COLLECTION.md](ML_DATA_COLLECTION.md) - Data collection, training, usage
 
-Micro-ESPectre extracts **5 CSI features** for ML applications:
+### Future ML Applications (Roadmap 3.x)
 
-| Feature | Fisher J | Description |
-|---------|----------|-------------|
-| **iqr_turb** | 3.56 | IQR of turbulence buffer |
-| **skewness** | 2.54 | Distribution asymmetry |
-| **kurtosis** | 2.24 | Distribution tailedness |
-| **entropy_turb** | 2.08 | Shannon entropy |
-| **variance_turb** | 1.21 | Moving variance (from MVS) |
+The ML infrastructure enables advanced features planned for future releases:
 
-See `tests/test_features.py` and `tests/test_validation_real_data.py` for feature validation.
+- Gesture recognition
+- Human Activity Recognition (HAR)
+- People counting
+- Localization and tracking
 
 <details>
 <summary>Standardized Wi-Fi Sensing (IEEE 802.11bf) (click to expand)</summary>
@@ -616,7 +565,7 @@ Beyond the basic commands covered in the [CLI Tool Overview](#cli-tool-overview)
 ./me
 
 # Connect to specific broker
-./me --broker 192.168.1.100 --port 1883
+./me --broker 192.168.1.100 --port-mqtt 1883
 
 # With authentication
 ./me --broker homeassistant.local --username mqtt --password mqtt
@@ -653,7 +602,7 @@ Micro-ESPectre includes a powerful **Web-based monitoring dashboard** for real-t
 | **Live Configuration** | Adjust detection parameters (response speed, threshold) in real-time |
 | **Real-Time Chart** | Live visualization of movement, threshold, packets/sec, and dropped packets |
 | **Runtime Statistics** | Memory usage, loop timing, and Traffic Generator diagnostics |
-| **Factory Reset** | Reset device to default configuration and re-calibrate NBVI |
+| **Factory Reset** | Reset device to default configuration and re-calibrate |
 
 ### Screenshots
 
@@ -663,7 +612,6 @@ Micro-ESPectre includes a powerful **Web-based monitoring dashboard** for real-t
 
 The dashboard displays:
 - **State**: Current detection state (MOTION in red, IDLE in green)
-- **Confidence**: Detection confidence percentage with progress bar
 - **Movement**: Current moving variance value
 - **Last Update**: Timestamp of last MQTT message
 
@@ -679,7 +627,7 @@ The chart shows:
 
 **Device Configuration** section shows:
 - Model, IP address, MAC address, WiFi protocol
-- Bandwidth (HT20/HT40), Channel, CSI status
+- Bandwidth (HT20), Channel, CSI status
 
 **Detection Parameters** (adjustable via sliders):
 - **Response Speed** (10-200): How fast the system reacts to changes (window size)
@@ -733,7 +681,7 @@ Publish JSON commands to `home/espectre/node1/cmd`:
 | `stats` | `{"cmd": "stats"}` | Get runtime statistics (memory, state, metrics) |
 | `segmentation_threshold` | `{"cmd": "segmentation_threshold", "value": 1.5}` | Set detection threshold (0.0-10.0) |
 | `segmentation_window_size` | `{"cmd": "segmentation_window_size", "value": 100}` | Set window size (10-200 packets) |
-| `factory_reset` | `{"cmd": "factory_reset"}` | Reset to defaults and re-calibrate NBVI |
+| `factory_reset` | `{"cmd": "factory_reset"}` | Reset to defaults and re-calibrate |
 
 ### Command Responses
 
@@ -744,6 +692,7 @@ Publish JSON commands to `home/espectre/node1/cmd`:
     "ip_address": "192.168.1.28",
     "mac_address": "7C:2C:67:42:BB:AC",
     "channel": {"primary": 4, "secondary": 0},
+    "band_mode": "2g-only",
     "protocol": "802.11b/g/n/ax",
     "bandwidth": "HT20",
     "csi_enabled": true,
@@ -755,7 +704,7 @@ Publish JSON commands to `home/espectre/node1/cmd`:
     "cmd_topic": "home/espectre/node1/cmd",
     "response_topic": "home/espectre/node1/response"
   },
-  "segmentation": {"threshold": 1.0, "window_size": 50},
+  "segmentation": {"threshold": 1.0, "window_size": 75},
   "subcarriers": {"indices": [6, 9, 10, 15, 18, 19, 30, 33, 36, 40, 49, 52]}
 }
 ```
@@ -792,9 +741,9 @@ Publish JSON commands to `home/espectre/node1/cmd`:
   - `packets_sent`: Total packets sent since start
   - `errors`: Socket errors count
 
-### Configuration Persistence
+### Runtime Configuration
 
-All configuration changes made via MQTT commands are **automatically saved** to a JSON file (`espectre_config.json`) on the ESP32 filesystem and **automatically loaded** on startup, ensuring settings persist across reboots.
+Configuration changes made via MQTT commands are **session-only** and reset on reboot. The adaptive threshold is recalculated automatically at each boot for optimal performance.
 
 ## Home Assistant Integration
 

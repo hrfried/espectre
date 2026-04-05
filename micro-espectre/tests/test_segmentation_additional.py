@@ -27,7 +27,7 @@ class TestSegmentationFilterErrors:
         ctx = SegmentationContext(enable_lowpass=True)
         # Should have lowpass filter initialized
         assert ctx.lowpass_filter is not None
-        assert ctx.window_size == 50
+        assert ctx.window_size == 75  # Matches C++ DETECTOR_DEFAULT_WINDOW_SIZE
     
     def test_hampel_init_success(self):
         """Test that hampel filter initializes correctly"""
@@ -65,123 +65,6 @@ class TestSegmentationFilterChainErrors:
             
             # Value should still be stored
             assert ctx.last_turbulence >= 0
-
-
-class TestSegmentationFeatures:
-    """Test feature extraction functionality"""
-    
-    def test_features_disabled_by_default(self):
-        """Test that features are disabled by default"""
-        ctx = SegmentationContext()
-        
-        assert ctx.feature_extractor is None
-        assert ctx.feature_detector is None
-    
-    def test_features_enabled(self):
-        """Test feature extraction when enabled"""
-        ctx = SegmentationContext(enable_features=True)
-        
-        assert ctx.feature_extractor is not None
-        assert ctx.feature_detector is not None
-    
-    def test_features_ready_false_no_extractor(self):
-        """Test features_ready returns False when extractor is None"""
-        ctx = SegmentationContext()
-        
-        assert ctx.features_ready() is False
-    
-    def test_features_ready_false_no_amplitudes(self):
-        """Test features_ready returns False when no amplitudes"""
-        ctx = SegmentationContext(enable_features=True)
-        
-        # No amplitudes yet
-        assert ctx.last_amplitudes is None
-        assert ctx.features_ready() is False
-    
-    def test_features_ready_false_buffer_not_full(self):
-        """Test features_ready returns False when buffer not full"""
-        ctx = SegmentationContext(window_size=50, enable_features=True)
-        
-        # Set amplitudes but buffer not full
-        ctx.last_amplitudes = [1.0, 2.0, 3.0]
-        ctx.buffer_count = 25
-        
-        assert ctx.features_ready() is False
-    
-    def test_features_ready_true(self):
-        """Test features_ready returns True when all conditions met"""
-        ctx = SegmentationContext(window_size=50, enable_features=True)
-        
-        ctx.last_amplitudes = [1.0, 2.0, 3.0]
-        ctx.buffer_count = 50
-        
-        assert ctx.features_ready() is True
-    
-    def test_compute_features_no_extractor(self):
-        """Test compute_features returns None when no extractor"""
-        ctx = SegmentationContext()
-        
-        result = ctx.compute_features()
-        
-        assert result is None
-    
-    def test_compute_features_not_ready(self):
-        """Test compute_features returns None when not ready"""
-        ctx = SegmentationContext(enable_features=True)
-        
-        result = ctx.compute_features()
-        
-        assert result is None
-    
-    def test_compute_features_success(self):
-        """Test compute_features returns features when ready"""
-        ctx = SegmentationContext(window_size=10, enable_features=True)
-        
-        # Fill buffer
-        for i in range(10):
-            ctx.add_turbulence(float(i))
-        
-        # Set amplitudes
-        ctx.last_amplitudes = [10.0, 12.0, 8.0, 11.0, 9.0]
-        
-        result = ctx.compute_features()
-        
-        assert result is not None
-        assert 'variance_turb' in result
-    
-    def test_compute_confidence_no_detector(self):
-        """Test compute_confidence returns 0 when no detector"""
-        ctx = SegmentationContext()
-        
-        confidence, triggered = ctx.compute_confidence(None)
-        
-        assert confidence == 0.0
-        assert triggered == []
-    
-    def test_compute_confidence_none_features(self):
-        """Test compute_confidence returns 0 with None features"""
-        ctx = SegmentationContext(enable_features=True)
-        
-        confidence, triggered = ctx.compute_confidence(None)
-        
-        assert confidence == 0.0
-        assert triggered == []
-    
-    def test_compute_confidence_with_features(self):
-        """Test compute_confidence with valid features"""
-        ctx = SegmentationContext(window_size=10, enable_features=True)
-        
-        # Fill buffer with high-variance values
-        for v in [1.0, 10.0, 2.0, 9.0, 3.0, 8.0, 4.0, 7.0, 5.0, 6.0]:
-            ctx.add_turbulence(v)
-        
-        ctx.last_amplitudes = [10.0, 12.0, 8.0, 11.0, 9.0]
-        
-        features = ctx.compute_features()
-        confidence, triggered = ctx.compute_confidence(features)
-        
-        assert isinstance(confidence, float)
-        assert isinstance(triggered, list)
 
 
 class TestSegmentationResetWithFilters:

@@ -4,18 +4,32 @@
 
 This guide covers how to collect and label CSI data for training ML models. This infrastructure lays the groundwork for advanced Wi-Fi sensing features (gesture recognition, HAR, people counting) planned for ESPectre 3.x.
 
-## Roadmap (3.x)
+## Status
 
 | Feature | Status |
 |---------|--------|
-| Data collection infrastructure | ✅ Ready (2.2.0) |
-| Feature extraction pipeline | 🔜 Planned |
-| Model training scripts (RF, CNN, LSTM) | 🔜 Planned |
-| Gesture recognition | 🔜 Planned |
-| Human Activity Recognition (HAR) | 🔜 Planned |
-| People counting | 🔜 Planned |
-| Real-time inference | 🔜 Planned |
-| Cloud service (API) | 🔜 Planned |
+| Data collection infrastructure | ✅ Ready |
+| Feature extraction (12 features) | ✅ Ready |
+| ML detector (MLP) | ✅ Ready |
+| Training script | ✅ Ready |
+| TFLite export | ✅ Ready |
+| Gesture recognition | 🔜 Planned (3.x) |
+| Human Activity Recognition (HAR) | 🔜 Planned (3.x) |
+| People counting | 🔜 Planned (3.x) |
+
+---
+
+## Supported Hardware
+
+**Recommended chips for ML data collection:**
+- ESP32-S3
+- ESP32-C3
+- ESP32-C6
+
+**Works with CV normalization:**
+- ESP32 (original) - Does not support AGC gain lock, but can still be used for training with CV normalization enabled
+
+> **Note**: AGC gain lock stabilizes CSI amplitudes during data collection. Without it, amplitudes vary with signal strength. Data collected without gain lock requires CV normalization (`std/mean`) during feature extraction to make detection gain-invariant. The training script handles this automatically using each file's `gain_locked` metadata.
 
 ---
 
@@ -48,10 +62,10 @@ Start streaming CSI data from ESP32 to your PC:
 ```
 
 **Features:**
-- Auto-calibration NBVI at boot (if subcarriers not configured)
-- Raw I/Q data for 12 selected subcarriers
+- Gain lock phase (~3s) for stable CSI acquisition
+- 64 subcarriers (HT20 mode)
 - Sequence numbers for packet loss detection
-- ~100 packets/second @ 28 bytes/packet
+- ~100 packets/second
 
 ---
 
@@ -65,19 +79,27 @@ The `me collect` subcommand provides a streamlined workflow for recording labele
 |---------|-------------|
 | `./me collect --label <name> --duration <sec>` | Record for specified duration |
 | `./me collect --label <name> --samples <n>` | Record n samples interactively |
+| `./me collect --label <name> --contributor <user>` | Override contributor (auto-detected from git) |
+| `./me collect --label <name> --description "text"` | Add description to sample |
 | `./me collect --info` | Show dataset statistics |
+
+Gain lock status is **automatically detected** from the CSI stream and saved in `dataset_info.json`.
 
 ### Recording Samples
 
 ```bash
-# Record 60 seconds of idle (baseline)
-./me collect --label idle --duration 60
+# Record 60 seconds of baseline (contributor auto-detected from git config)
+./me collect --label baseline --duration 60
 
-# Record 30 seconds of wave gesture
-./me collect --label wave --duration 30
+# Record 30 seconds of movement
+./me collect --label movement --duration 30
 
-# Record 10 samples interactively (press Enter between each)
-./me collect --label swipe --samples 10 --interactive
+# Record with explicit contributor override
+./me collect --label gesture --samples 10 --interactive --contributor otheruser
+
+# Gain lock status is auto-detected from the CSI stream
+# No need to specify --no-gain-lock, it's automatic!
+./me collect --label baseline --duration 10
 ```
 
 ### Viewing Dataset
@@ -88,11 +110,14 @@ The `me collect` subcommand provides a streamlined workflow for recording labele
 
 Output:
 ```
-Dataset: 5 labels, 47 samples
-  idle: 12 samples (36000 packets)
-  wave: 10 samples (15000 packets)
-  swipe: 10 samples (15000 packets)
+  Label                   Samples
+  --------------------------------
+  idle                         12
+  wave                         10
+  swipe                        10
   ...
+  --------------------------------
+  Total                        47
 ```
 
 ---
@@ -104,28 +129,95 @@ Dataset: 5 labels, 47 samples
 ```
 data/
 ├── dataset_info.json          # Global metadata
-├── idle/
-│   ├── idle_001.npz
-│   ├── idle_002.npz
+├── baseline/
+│   ├── baseline_c6_64sc_20251212_142443.npz
 │   └── ...
-├── wave/
-│   ├── wave_001.npz
+├── movement/
+│   ├── movement_c6_64sc_20251212_142443.npz
 │   └── ...
-└── movement/
-    └── ...
+└── ...
 ```
+
+**Note**: HT20 only - all datasets use 64 subcarriers.
+
+File naming convention: `{label}_{chip}_{num_sc}sc_{timestamp}.npz`
+
+### Dataset Info (dataset_info.json)
+
+Central metadata file for the dataset:
+
+```json
+{
+  "format_version": "1.0",
+  "labels": {
+    "baseline": { "description": "Quiet room, no motion" },
+    "movement": { "description": "Human movement in room" }
+  },
+  "files": {
+    "baseline": [
+      {
+        "filename": "baseline_c6_64sc_20251212_142443.npz",
+        "chip": "C6",
+        "subcarriers": 64,
+        "contributor": "francescopace",
+        "collected_at": "2025-12-12T14:24:43.381306",
+        "duration_ms": 10000,
+        "num_packets": 1000,
+        "description": "HT20 baseline sample"
+      },
+      {
+        "filename": "baseline_esp32_64sc_20260214_183059.npz",
+        "chip": "ESP32",
+        "subcarriers": 64,
+        "contributor": "francescopace",
+        "gain_locked": false,
+        "collected_at": "2026-02-14T18:30:59.355439",
+        "duration_ms": 9998,
+        "num_packets": 961,
+        "description": "HT20 baseline, no gain lock (ESP32 lacks AGC lock support)"
+      }
+    ]
+  },
+  "environments": [...]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `filename` | NPZ file name |
+| `chip` | ESP32 chip type (C6, S3, ESP32) |
+| `subcarriers` | Number of subcarriers (64 for HT20) |
+| `contributor` | GitHub username of data collector |
+| `collected_at` | ISO timestamp of collection |
+| `duration_ms` | Sample duration in milliseconds |
+| `num_packets` | Number of CSI packets |
+| `gain_locked` | `true` if AGC gain lock was active during collection |
+| `description` | Human-readable description |
 
 ### Sample Format (.npz)
 
-Each `.npz` file contains:
+Each `.npz` file contains a minimal, compact format optimized for ML training:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `csi_data` | `int8[N, 24]` | Raw I/Q data (N packets × 12 subcarriers × 2) |
-| `timestamps` | `uint32[N]` | Packet timestamps (ms) |
-| `rssi` | `int8[N]` | RSSI values |
-| `noise_floor` | `int8[N]` | Noise floor values |
-| `label` | `str` | Sample label |
+| `csi_data` | `int8[N, SC*2]` | Raw I/Q data (N packets × SC subcarriers × 2) |
+| `num_subcarriers` | `int` | Number of subcarriers (64 for HT20) |
+| `label` | `str` | Sample label (e.g., "baseline", "movement") |
+| `chip` | `str` | ESP32 chip type (e.g., "c6", "s3") |
+| `gain_locked` | `bool` | Whether AGC gain lock was active during collection |
+| `collected_at` | `str` | ISO timestamp of collection |
+| `duration_ms` | `float` | Sample duration in milliseconds |
+| `format_version` | `str` | NPZ format version ("1.0") |
+
+Amplitudes and phases can be computed on-the-fly from `csi_data`:
+
+```python
+# Espressif CSI format: [Imaginary, Real, ...] per subcarrier
+Q = csi_data[:, 0::2].astype(float)  # Imaginary (Q) at even indices
+I = csi_data[:, 1::2].astype(float)  # Real (I) at odd indices
+amplitudes = np.sqrt(I**2 + Q**2)
+phases = np.arctan2(Q, I)
+```
 
 ### Loading Data
 
@@ -133,32 +225,73 @@ Each `.npz` file contains:
 import numpy as np
 
 # Load single sample
-data = np.load('data/wave/wave_001.npz')
-csi = data['csi_data']      # Shape: (N, 24)
-label = str(data['label'])  # 'wave'
+data = np.load('data/baseline/baseline_c6_64sc_20251212_142443.npz')
+csi_data = data['csi_data']        # Shape: (N, 128) for 64 subcarriers
+label = str(data['label'])         # 'baseline'
+num_sc = int(data['num_subcarriers'])  # 64
 
-# Extract amplitudes
-amplitudes = []
-for i in range(12):
-    I = csi[:, i*2].astype(float)
-    Q = csi[:, i*2+1].astype(float)
-    amplitudes.append(np.sqrt(I**2 + Q**2))
-amplitudes = np.array(amplitudes).T  # Shape: (N, 12)
+# Compute amplitudes from raw I/Q data
+# Espressif CSI format: [Imaginary, Real, ...] per subcarrier
+Q = csi_data[:, 0::2].astype(float)  # Imaginary (Q) - Shape: (N, 64)
+I = csi_data[:, 1::2].astype(float)  # Real (I) - Shape: (N, 64)
+amplitudes = np.sqrt(I**2 + Q**2)    # Shape: (N, 64)
+phases = np.arctan2(Q, I)            # Shape: (N, 64)
 ```
 
 ### Using csi_utils
 
 ```python
-from csi_utils import load_npz_as_packets
+from tools.csi_utils import load_npz_as_packets
+from pathlib import Path
+import numpy as np
 
-# Load as list of packet dicts (compatible with analysis scripts)
-packets = load_npz_as_packets('data/wave/wave_001.npz')
+# Load a sample file (run from micro-espectre/)
+packets = load_npz_as_packets(Path('data/baseline/baseline_c6_64sc_20251212_142443.npz'))
 
 for pkt in packets:
-    csi_data = pkt['csi_data']
-    rssi = pkt['rssi']
+    csi_data = pkt['csi_data']           # Shape: (128,) - raw I/Q data
+    label = pkt['label']
+    
+    # Calculate amplitudes from I/Q pairs
+    Q = csi_data[0::2].astype(float)     # Imaginary (odd indices)
+    I = csi_data[1::2].astype(float)     # Real (even indices)
+    amplitudes = np.sqrt(I**2 + Q**2)    # Shape: (64,)
     # Process...
 ```
+
+---
+
+## Data Without Gain Lock
+
+Some ESP32 chips (original ESP32) or data collection sessions may not have AGC gain lock enabled. This causes CSI amplitudes to vary with signal strength rather than just motion.
+
+### How It Works
+
+Instead of excluding this data, the training script applies **CV normalization** (`std/mean`) during feature extraction. This normalizes spatial turbulence to be gain-invariant.
+
+### When to Use CV Normalization
+
+- **ESP32 (original)**: Does not support AGC gain lock in the CSI driver
+- **Data collected before enabling gain lock**: Some C3 datasets were collected before gain lock was enabled
+- **Future compatibility**: Any data where amplitudes are unreliable
+
+### Automatic Detection
+
+The collector **automatically detects** the gain lock status from the CSI stream:
+
+1. The ESP32 firmware sends a `gain_locked` flag in each UDP packet
+2. The collector saves this flag in the `.npz` file
+3. `dataset_info.json` stores `gain_locked: false` when gain lock was not applied
+
+No manual flags needed - the system handles everything automatically!
+
+### Viewing Files with CV Normalization
+
+```bash
+python tools/10_train_ml_model.py --info
+```
+
+This shows which files use CV normalization.
 
 ---
 
@@ -196,10 +329,12 @@ gesture1      # non-descriptive
 ### Session Workflow
 
 1. **Prepare environment**: Ensure room is quiet for baseline
-2. **Record baseline first**: `./me collect start idle 60`
-3. **Record gestures**: One gesture type at a time
+2. **Record baseline first**: `./me collect --label baseline --duration 60`
+3. **Record movement**: `./me collect --label movement --duration 60`
 4. **Verify dataset**: `./me collect --info`
 5. **Backup data**: Copy `data/` to safe location
+
+Note: Contributor is auto-detected from `git config user.name`. Use `--contributor` to override.
 
 ---
 
@@ -221,6 +356,60 @@ See [tools/README.md](tools/README.md) for complete documentation of all analysi
 
 ---
 
+## Training the ML Model
+
+Once you have collected labeled data, train the ML model:
+
+```bash
+# Train model (default uses --fp-weight 2.0)
+python tools/10_train_ml_model.py
+
+# Show dataset info (including excluded files)
+python tools/10_train_ml_model.py --info
+```
+
+The `--fp-weight` parameter multiplies the IDLE class weight during training. Values >1.0 reduce false positives at the cost of slightly lower recall. Current default: `2.0` (production-oriented).
+
+This will:
+1. Load all `.npz` files from `data/`
+2. Apply CV normalization to files with `gain_locked: false`
+3. Apply MVS-guided sample weighting on the default subcarrier set
+4. Extract 12 features per sliding window
+5. 5-fold cross-validation for reliable metrics
+6. Train MLP model (12 → 16 → 8 → 1) with early stopping and dropout
+7. Export to:
+   - `src/ml_weights.py` (MicroPython) - includes seed and timestamp
+   - `components/espectre/ml_weights.h` (C++/ESPHome) - includes seed and timestamp
+   - `models/motion_detector_small.tflite` (TFLite int8)
+   - `models/feature_scaler.npz` (normalization params)
+   - `models/ml_test_data.npz` (test data for validation)
+
+Use `--seed <number>` for reproducible training. The seed is saved in the generated weight files.
+
+> **Note**: Files with `gain_locked: false` automatically use CV normalization during feature extraction. Use `--info` to see which files are affected.
+
+### Compare Detection Methods
+
+After training, compare ML with MVS:
+
+```bash
+python tools/7_compare_detection_methods.py
+```
+
+Add `--plot` to visualize results graphically.
+
+### Using the ML Detector
+
+Set in `config.py`:
+
+```python
+DETECTION_ALGORITHM = "ml"
+```
+
+For algorithm details, see [ALGORITHMS.md](ALGORITHMS.md#ml-neural-network-detector).
+
+---
+
 ## Advanced: Custom CSI Receiver (Optional)
 
 For custom real-time processing, you can use `CSIReceiver` as a library:
@@ -229,12 +418,13 @@ For custom real-time processing, you can use `CSIReceiver` as a library:
 from csi_utils import CSIReceiver
 
 def my_callback(packet):
-    # packet is a dict with:
-    # - timestamp_ms: Reception timestamp
+    # packet is a CSIPacket dataclass with:
+    # - timestamp: Reception timestamp (seconds since epoch)
     # - seq_num: Sequence number (0-255)
-    # - csi_data: Raw I/Q as numpy array
-    # - rssi, noise_floor: Signal quality
-    print(f"Seq: {packet['seq_num']}, RSSI: {packet['rssi']}")
+    # - num_subcarriers: Number of subcarriers (64 for HT20)
+    # - iq_raw: Raw I/Q values as int8 array
+    # - chip: Chip type (e.g., 'c6', 's3') - auto-detected from stream
+    print(f"Chip: {packet.chip}, Seq: {packet.seq_num}, SC: {packet.num_subcarriers}")
 
 receiver = CSIReceiver(port=5001)
 receiver.add_callback(my_callback)
@@ -244,16 +434,23 @@ receiver.run(timeout=60)  # Run for 60 seconds
 ### UDP Packet Format
 
 ```
-Header (4 bytes):
+Header (7 bytes):
   - Magic: 0x4353 ("CS") - 2 bytes
-  - Num subcarriers: 1 byte
+  - Chip type: 1 byte (0=unknown, 1=ESP32, 2=S2, 3=S3, 4=C3, 5=C5, 6=C6)
+  - Flags: 1 byte (bit 0 = gain_locked)
   - Sequence number: 1 byte (0-255, wrapping)
+  - Num subcarriers: 2 bytes (uint16, little-endian)
 
-Payload (N × 2 bytes = 24 bytes for 12 SC):
+Payload (N × 2 bytes):
   - I0, Q0, I1, Q1, ... (int8 each)
 
-Total: 28 bytes per packet
+Example (HT20, 64 SC):
+  - 7 + 128 = 135 bytes
 ```
+
+The `gain_locked` flag indicates whether AGC gain lock was applied during data collection. If not set (0), CV normalization should be applied during feature extraction.
+
+Note: ESPectre uses HT20 mode (64 subcarriers) for consistent performance across all ESP32 variants. Chip type and gain lock status are automatically detected and included in each packet.
 
 ---
 
@@ -305,7 +502,7 @@ For scientific background on CSI-based gesture recognition and HAR:
 - **Widar 3.0**: Cross-domain gesture recognition dataset
 - **SignFi**: Sign language recognition with WiFi
 
-See [References](README.md#references) in the main README for complete bibliography.
+See [References](README.md#references) in the Micro-ESPectre README for complete bibliography.
 
 ## License
 

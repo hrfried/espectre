@@ -9,15 +9,14 @@
 
 **Motion detection system based on Wi-Fi spectre analysis (CSI), with native Home Assistant integration via ESPHome.**
 
-**Featured Article**: Read the complete story behind ESPectre on Medium: [Italian](https://medium.com/@francesco.pace/come-ho-trasformato-il-mio-wi-fi-in-un-sensore-di-movimento-40053fd83128?source=friends_link&sk=46d9cfa026790ae807ecc291ac5eac67&utm_source=github&utm_medium=readme&utm_campaign=espectre), [English](https://medium.com/@francesco.pace/how-i-turned-my-wi-fi-into-a-motion-sensor-61a631a9b4ec?sk=c7f79130d78b0545fce4a228a6a79af3&utm_source=github&utm_medium=readme&utm_campaign=espectre)
-
+> [!TIP]
+> **New in v2.5 — ML Detector**: Neural network-based motion detection. No calibration required, runs on-device. This is an experimental feature, feedback is welcome in the [discussion](https://github.com/francescopace/espectre/discussions/84). A [snapshot build](https://github.com/francescopace/espectre/releases/tag/snapshot) with the latest changes is also available (use `-ml` assets for the machine learning based detector), or follow [Setup guide](SETUP.md#choosing-detection-algorithm) for custom configuration. 
 
 ---
 
 ## Table of Contents
 
 - [In 3 Points](#in-3-points)
-- [Mathematical Approach](#mathematical-approach)
 - [What You Need](#what-you-need)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works-simple-version)
@@ -30,6 +29,8 @@
 - [Two-Platform Strategy](#two-platform-strategy)
 - [Future Evolution](#future-evolution)
 - [Documentation](#documentation)
+- [Media](#media)
+- [Acknowledgments](#acknowledgments)
 - [License](#license)
 - [Author](#author)
 
@@ -40,19 +41,6 @@
 1. **What it does**: Detects movement using Wi-Fi (no cameras, no microphones)
 2. **What you need**: A ~€10 ESP32 device (S3 and C6 recommended, other variants supported)
 3. **Setup time**: 10-15 minutes
-
----
-
-## Mathematical Approach
-
-**This project uses a pure mathematical approach** based on the **MVS (Moving Variance Segmentation)** algorithm for motion detection and **NBVI (Normalized Baseline Variability Index)** for subcarriers selection.
-
-- **No ML training required**: Works out-of-the-box with mathematical algorithms
-- **Real-time processing**: Low latency detection on ESP32 hardware
-- **Production-ready**: Focused on reliable motion detection for smart home
-- **R&D platform available**: [Micro-ESPectre](micro-espectre/) provides features extraction for ML research
-
-For algorithm details (MVS, NBVI, Hampel filter), see [ALGORITHMS.md](micro-espectre/ALGORITHMS.md).
 
 ---
 
@@ -88,9 +76,12 @@ For algorithm details (MVS, NBVI, Hampel filter), see [ALGORITHMS.md](micro-espe
 1. **Setup & Installation**: Follow the complete guide in [SETUP.md](SETUP.md)
 2. **Tuning**: Optimize for your environment with [TUNING.md](TUNING.md)
 
+![ESPectre Home Assistant Dashboard](images/espectre-home-assistant.png)
+*Home Assistant dashboard with real-time motion detection, threshold control, and debug sensors*
+
 ---
 
-## How It Works (Simple Version)
+## How It Works
 
 When someone moves in a room, they "disturb" the Wi-Fi waves traveling between the router and the sensor. It's like when you move your hand in front of a flashlight and see the shadow change.
 
@@ -167,19 +158,19 @@ ESPectre uses a focused processing pipeline for motion detection:
        ▼
 ┌─────────────┐
 │    Auto     │  Automatic subcarrier selection (once at boot)
-│ Calibration │  Selects optimal 12 subcarriers via NBVI
+│ Calibration │  Selects optimal 12 subcarriers (NBVI)
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
-│Normalization│  Attenuate if baseline > 0.25 (always enabled)
-│             │  Prevents extreme motion values
+│  Adaptive   │  auto: P95 × 1.1 | min: P100
+│  Threshold  │  or fixed manual value
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
 │   Hampel    │  Turbulence outlier removal
-│   Filter    │  (optional, disabled by default)
+│   Filter    │  (enabled by default)
 └──────┬──────┘
        │
        ▼
@@ -226,11 +217,11 @@ Each sensor is automatically discovered by Home Assistant with:
 
 ### Automatic Subcarrier Selection
 
-ESPectre implements the **NBVI (Normalized Baseline Variability Index)** algorithm for automatic subcarrier selection, achieving near-optimal performance (F1=98.2%) with **zero manual configuration**.
+ESPectre implements **NBVI** (Normalized Band Variance Index) for automatic subcarrier selection, achieving near-optimal performance (F1>96%) with **zero manual configuration**. The algorithm selects 12 non-consecutive subcarriers based on stability metrics and spectral diversity.
 
-> ⚠️ **IMPORTANT**: Keep the room **quiet and still** for 10 seconds after device boot. The auto-calibration runs during this time and movement will affect detection accuracy.
+> ⚠️ **IMPORTANT** (MVS mode): Keep the room **quiet and still** for 10 seconds after device boot. The auto-calibration runs during this time and movement will affect detection accuracy. ML mode skips calibration.
 
-For NBVI algorithm details, see [ALGORITHMS.md](micro-espectre/ALGORITHMS.md#nbvi-automatic-subcarrier-selection).
+For algorithm details, see [ALGORITHMS.md](micro-espectre/ALGORITHMS.md#subcarrier-selection-nbvi).
 
 ---
 
@@ -322,7 +313,7 @@ CSI data represents only the properties of the transmission medium and does not 
 
 ## Technical Deep Dive
 
-For algorithm details (MVS, NBVI, Hampel filter), see [ALGORITHMS.md](micro-espectre/ALGORITHMS.md).
+For algorithm details (MVS, NBVI calibration, Hampel filter), see [ALGORITHMS.md](micro-espectre/ALGORITHMS.md).
 
 For performance metrics (confusion matrix, F1-score, benchmarks), see [PERFORMANCE.md](PERFORMANCE.md).
 
@@ -378,16 +369,18 @@ Micro-ESPectre gives you the fundamentals for:
 
 ## Future Evolution
 
-While ESPectre v2.x focuses on **motion detection** (MVS + NBVI), the project is exploring machine learning capabilities for advanced applications:
+While ESPectre v2.x focuses on **motion detection** (MVS + automatic subcarrier selection), the project is exploring machine learning capabilities for advanced applications:
 
 | Capability | Status | Description |
 |------------|--------|-------------|
+| **ML Detector** | Experimental | Neural network (MLP 12→16→8→1, 97-100% F1), ~3s boot time |
 | **Gesture Recognition** | Planned | Detect hand gestures (swipe, push, circle) for smart home control |
 | **Human Activity Recognition** | Planned | Identify activities (sitting, walking, falling) |
 | **People Counting** | Planned | Estimate number of people in a room |
-| **Cloud Inference** | Exploratory | Optional cloud-based ML inference services |
+| **3D Localization** | Research | Indoor positioning (30-50cm accuracy) via phase-coherent antenna array |
 
-The ML data collection infrastructure is already available in [Micro-ESPectre](micro-espectre/ML_DATA_COLLECTION.md).
+The ML Detector is already available with `detection_algorithm: ml` in your YAML configuration. For algorithm details, see [ALGORITHMS.md](micro-espectre/ALGORITHMS.md#ml-neural-network-detector). 
+The ML data collection and training infrastructure is documented in [ML_DATA_COLLECTION.md](micro-espectre/ML_DATA_COLLECTION.md).
 
 See [ROADMAP.md](ROADMAP.md) for detailed plans, timelines, and how to contribute.
 
@@ -411,7 +404,7 @@ See [ROADMAP.md](ROADMAP.md) for detailed plans, timelines, and how to contribut
 | Document | Description |
 |----------|-------------|
 | [Intro](micro-espectre/README.md) | R&D platform overview, CLI, MQTT, Web Monitor |
-| [Algorithms](micro-espectre/ALGORITHMS.md) | Scientific documentation of MVS, NBVI, Hampel filter |
+| [Algorithms](micro-espectre/ALGORITHMS.md) | Scientific documentation of MVS, NBVI calibration, Hampel filter |
 | [Analysis Tools](micro-espectre/tools/README.md) | CSI analysis and optimization scripts |
 | [ML Data Collection](micro-espectre/ML_DATA_COLLECTION.md) | Building labeled datasets for machine learning |
 | [References](micro-espectre/README.md#references) | Academic papers and research resources |
@@ -428,6 +421,35 @@ See [ROADMAP.md](ROADMAP.md) for detailed plans, timelines, and how to contribut
 
 ---
 
+## Media
+
+| Articles | Title |
+|-------------|-------|
+| Medium | [How I Turned My Wi-Fi Into a Motion Sensor - Part 1](https://medium.com/@francesco.pace/how-i-turned-my-wi-fi-into-a-motion-sensor-61a631a9b4ec?sk=c7f79130d78b0545fce4a228a6a79af3&utm_source=github&utm_medium=readme&utm_campaign=espectre) |
+| Medium | [How I Turned My Wi-Fi Into a Motion Sensor - Part 2](https://medium.com/@francesco.pace/how-i-turned-my-wi-fi-into-a-motion-sensor-part-2-62038130e530?sk=7c8b6f11cf3fcb8d279648016ebff72a&utm_source=github&utm_medium=readme&utm_campaign=espectre) |
+| IoT For All | [How I Turned My Wi-Fi Into a Motion Sensor](https://www.iotforall.com/wifi-motion-sensor-iot) |
+| Hackaday | [Make Your Own ESP32-Based Person Sensor, No Special Hardware Needed](https://hackaday.com/2026/01/28/make-your-own-esp32-based-person-sensor-no-special-hardware-needed/) |
+
+| Blog | Discussion |
+|----------|------------|
+| Home Assistant | [ESPectre - Wi-Fi Motion Detection for Home Assistant](https://community.home-assistant.io/t/espectre-wi-fi-motion-detection-for-home-assistant/961251) |
+
+| Videos | Video |
+|---------|-------|
+| @GithubAwesome | [ESPectre](https://www.youtube.com/shorts/iQ_DPHLn8ms) |
+
+| Podcasts | Episode |
+|-------------|---------|
+| Hackaday | [Podcast Episode 355: Person Detectors, Walkie Talkies, Open Smartphones...](https://hackaday.com/2026/01/30/hackaday-podcast-episode-355-person-detectors-walkie-talkies-open-smartphones-and-a-wifi-traffic-light/) |
+
+---
+
+## Acknowledgments
+
+ESPectre leverages the native Wi-Fi CSI capabilities of ESP32 chips. Thanks to [Espressif](https://www.espressif.com/) for making CSI accessible in the ESP-IDF framework and for recognizing ESPectre as a [community project](https://github.com/espressif/esp-csi#6-related-resources) in their [esp-csi](https://github.com/espressif/esp-csi) repository.
+
+---
+
 ## License
 
 This project is released under the **GNU General Public License v3.0 (GPLv3)**.
@@ -439,6 +461,10 @@ GPLv3 ensures that:
 - Protects end-user rights and software freedom
 
 See [LICENSE](LICENSE) for the full license text.
+
+Contributions are submitted under GPLv3 and require acceptance of the
+[Contributor License Agreement](CLA.md), which grants the maintainer
+additional relicensing rights.
 
 ## Author
 
